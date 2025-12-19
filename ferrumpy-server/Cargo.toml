@@ -1,0 +1,19 @@
+[package]
+name = "ferrumpy-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "JSON-RPC server for FerrumPy - bridges Python LLDB with Rust functionality"
+
+[[bin]]
+name = "ferrumpy-server"
+path = "src/main.rs"
+
+[dependencies]
+ferrumpy-core = { path = "../ferrumpy-core" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

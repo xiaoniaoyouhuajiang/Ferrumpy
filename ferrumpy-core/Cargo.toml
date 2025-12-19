@@ -1,0 +1,31 @@
+[package]
+name = "ferrumpy-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core library for FerrumPy - Rust debugger enhancements"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+python = ["pyo3"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+lsp-types = "0.95"
+
+# Expression parsing
+syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
+
+# Python bindings (optional)
+pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+
+[dev-dependencies]
