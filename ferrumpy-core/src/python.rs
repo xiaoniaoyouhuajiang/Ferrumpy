@@ -90,10 +90,124 @@ fn parse_expression(expr: &str) -> PyResult<String> {
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
 }
 
+/// Python wrapper for ReplSession
+#[pyclass]
+struct PyReplSession {
+    inner: Option<crate::repl::ReplSession>,
+}
+
+#[pymethods]
+impl PyReplSession {
+    /// Create a new REPL session
+    #[new]
+    fn new() -> PyResult<Self> {
+        // Note: evcxr requires runtime_hook() to be called first
+        // We'll try to create the session and handle errors gracefully
+        match crate::repl::ReplSession::new() {
+            Ok(session) => Ok(Self {
+                inner: Some(session),
+            }),
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Failed to create REPL session: {}",
+                e
+            ))),
+        }
+    }
+
+    /// Evaluate a Rust expression
+    fn eval(&mut self, code: &str) -> PyResult<String> {
+        let session = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Session not initialized"))?;
+
+        session
+            .eval(code)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// Add a crate dependency
+    fn add_dep(&mut self, name: &str, spec: &str) -> PyResult<String> {
+        let session = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Session not initialized"))?;
+
+        session
+            .add_dep(name, spec)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// Load variables from JSON snapshot
+    fn load_snapshot(&mut self, json_data: &str, type_hints: &str) -> PyResult<String> {
+        let session = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Session not initialized"))?;
+
+        session
+            .load_snapshot(json_data, type_hints)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// Check if session is initialized
+    fn is_initialized(&self) -> bool {
+        self.inner
+            .as_ref()
+            .map(|s| s.is_initialized())
+            .unwrap_or(false)
+    }
+
+    /// Get any stderr output
+    fn get_stderr(&self) -> Vec<String> {
+        self.inner
+            .as_ref()
+            .map(|s| s.get_stderr())
+            .unwrap_or_default()
+    }
+
+    /// Add a path dependency (for user's lib crate)
+    fn add_path_dep(&mut self, name: &str, path: &str) -> PyResult<String> {
+        let session = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Session not initialized"))?;
+
+        session
+            .add_path_dep(name, std::path::Path::new(path))
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+}
+
+/// Generate a companion lib crate from a user's project
+///
+/// Args:
+///     project_path: Path to the user's Rust project (containing Cargo.toml)
+///     output_dir: Optional output directory (None = use temp dir)
+///
+/// Returns:
+///     Tuple of (lib_path, crate_name)
+#[pyfunction]
+fn generate_lib(project_path: &str, output_dir: Option<&str>) -> PyResult<(String, String)> {
+    use crate::libgen::{generate_lib as rust_generate_lib, LibGenConfig};
+
+    let config = LibGenConfig {
+        add_serde_derives: true,
+        output_dir: output_dir.map(std::path::PathBuf::from),
+    };
+
+    let result = rust_generate_lib(std::path::Path::new(project_path), config)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    Ok((result.path.to_string_lossy().to_string(), result.crate_name))
+}
+
 /// FerrumPy Python module
 #[pymodule]
 fn ferrumpy_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(eval_expression, m)?)?;
     m.add_function(wrap_pyfunction!(parse_expression, m)?)?;
+    m.add_function(wrap_pyfunction!(generate_lib, m)?)?;
+    m.add_class::<PyReplSession>()?;
     Ok(())
 }

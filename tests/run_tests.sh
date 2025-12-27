@@ -80,7 +80,7 @@ run_lldb_tests() {
     local output
     output=$(lldb target/debug/rust_sample \
         -o "command script import /Users/wangjiajie/software/FerrumPy/python/ferrumpy" \
-        -o "b main.rs:82" \
+        -o "b main.rs:94" \
         -o "run" \
         -o "ferrumpy pp simple_string" \
         -o "ferrumpy pp numbers" \
@@ -93,6 +93,10 @@ run_lldb_tests() {
         -o "ferrumpy complete s" \
         -o "ferrumpy type simple_string" \
         -o "ferrumpy-pp simple_string" \
+        -o "ferrumpy pp numbers[0]" \
+        -o "ferrumpy pp matrix[0][1]" \
+        -o "ferrumpy pp matrix[1][2]" \
+        -o "ferrumpy pp fixed_array[2]" \
         -o "kill" \
         -o "quit" 2>&1)
     
@@ -120,6 +124,10 @@ run_lldb_tests() {
     check "Rc" 'Rc(42)'
     check "Complete" 'simple_string: alloc::string::String'
     check "Type" 'Type: alloc::string::String'
+    check "Vec Index" '(int) 1'
+    check "Matrix Index" '(int) 2'
+    check "Matrix Nested" '(int) 6'
+    check "Fixed Array" '(int) 30'
     
     echo
     echo "Tests: $passed/$((passed + failed)) passed"
@@ -129,22 +137,58 @@ run_lldb_tests() {
 }
 
 # ============================================
+# REPL Integration Tests
+# ============================================
+run_repl_tests() {
+    echo
+    echo "--- REPL Integration Tests ---"
+    echo
+    
+    # Check if expect is available
+    if ! command -v expect &> /dev/null; then
+        echo "  ⚠ expect not found, skipping interactive REPL tests"
+        echo "  Install with: brew install expect"
+        return 0
+    fi
+    
+    echo "Starting REPL test (this may take a while for first-time compilation)..."
+    echo "Using expect for interactive testing..."
+    echo
+    
+    # Run the expect script
+    if expect "$PROJECT_ROOT/tests/test_repl.exp" "$PROJECT_ROOT"; then
+        echo
+        echo "REPL Tests: PASSED"
+        return 0
+    else
+        echo
+        echo "REPL Tests: FAILED"
+        return 1
+    fi
+}
+
+# ============================================
 # Main
 # ============================================
 PYTHON_OK=true
 LLDB_OK=true
+REPL_OK=true
 
-if [ "$1" != "--lldb" ]; then
+if [ "$1" != "--lldb" ] && [ "$1" != "--repl" ]; then
     run_python_tests || PYTHON_OK=false
 fi
 
-if [ "$1" != "--python" ]; then
+if [ "$1" != "--python" ] && [ "$1" != "--repl" ]; then
     run_lldb_tests || LLDB_OK=false
+fi
+
+if [ "$1" == "--repl" ] || [ "$1" == "--all" ] || [ -z "$1" ]; then
+    run_repl_tests || REPL_OK=false
 fi
 
 echo
 echo "=============================================="
-if $PYTHON_OK && $LLDB_OK; then
+if $PYTHON_OK && $LLDB_OK && $REPL_OK; then
     echo "All tests passed!"
 else
     echo "Some tests failed."

@@ -28,6 +28,7 @@ Thumbs.db
 # Project specific
 references/
 tests/rust_sample/target/
+data/scripts/ferrumpy-repl-worker
 
 # pyenv
 .python-version

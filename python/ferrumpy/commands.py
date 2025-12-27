@@ -162,7 +162,7 @@ def ferrumpy_pp_command(
     args = shlex.split(command) if command else []
     
     if not args:
-        result.SetError("Usage: ferrumpy-pp <path> [--expand]")
+        result.SetError("Usage: ferrumpy-pp <path> [--expand] [--deep] [--addr]")
         return
     
     target = debugger.GetSelectedTarget()
@@ -174,12 +174,17 @@ def ferrumpy_pp_command(
         result.SetError("No valid frame selected. Are you stopped at a breakpoint?")
         return
     
+    # Extract flags
     path = args[0]
     expand = "--expand" in args
+    deep = "--deep" in args
+    show_addr = "--addr" in args
     
     try:
         value = resolve_path(frame, path)
-        formatted = format_value(value, expand=expand)
+        from .providers import FormatOptions
+        options = FormatOptions(expand=expand, deep=deep, show_addr=show_addr)
+        formatted = format_value(value, options=options)
         type_name = value.GetType().GetName()
         result.AppendMessage(f"({type_name}) {formatted}")
     except PathResolutionError as e:
@@ -228,6 +233,8 @@ def ferrumpy_command(
         _cmd_type(frame, result, subargs)
     elif subcommand == "eval":
         _cmd_eval(frame, result, subargs)
+    elif subcommand == "repl":
+        _cmd_repl(frame, result, subargs, debugger)
     else:
         result.SetError(f"Unknown subcommand: {subcommand}. Try 'ferrumpy help'")
 
@@ -248,6 +255,7 @@ SUBCOMMANDS:
     complete <prefix>   Get completions for a path prefix
     type <expr>         Get type info for an expression
     eval <expr>         Evaluate an expression (Rust syntax)
+    repl [project_path] Start interactive REPL with current variables
     help                Show this help message
 
 TAB COMPLETION:
@@ -328,16 +336,18 @@ def _cmd_pp(
 ):
     """Pretty print a specific path expression."""
     if not args:
-        result.SetError("Usage: ferrumpy pp <path>")
+        result.SetError("Usage: ferrumpy pp <path> [--expand] [--deep] [--addr]")
         return
     
     # Extract flags
     show_raw = "--raw" in args
     expand = "--expand" in args
+    deep = "--deep" in args
+    show_addr = "--addr" in args
     path_args = [a for a in args if not a.startswith("--")]
     
     if not path_args:
-        result.SetError("Usage: ferrumpy pp <path>")
+        result.SetError("Usage: ferrumpy pp <path> [--expand] [--deep] [--addr]")
         return
     
     path = path_args[0]
@@ -348,7 +358,9 @@ def _cmd_pp(
         if show_raw:
             result.AppendMessage(str(value))
         else:
-            formatted = format_value(value, expand=expand)
+            from .providers import FormatOptions
+            options = FormatOptions(expand=expand, deep=deep, show_addr=show_addr)
+            formatted = format_value(value, options=options)
             type_name = value.GetType().GetName()
             result.AppendMessage(f"({type_name}) {formatted}")
             
@@ -544,3 +556,100 @@ def _cmd_eval(
         result.SetError(f"Eval error: {e}")
 
 
+def _cmd_repl(
+    frame: lldb.SBFrame,
+    result: lldb.SBCommandReturnObject,
+    args: list,
+    debugger: lldb.SBDebugger
+):
+    """Start an interactive REPL with captured variables."""
+    from .repl import EmbeddedReplSession
+    from .serializer import serialize_frame
+    
+    # Check for --test flag (non-interactive mode for testing)
+    test_mode = "--test" in args
+    
+    result.AppendMessage("Starting FerrumPy Embedded REPL...")
+    result.AppendMessage("Capturing variables from current frame...")
+    
+    # Serialize current frame for display
+    data = serialize_frame(frame)
+    num_vars = len(data.get('variables', {}))
+    result.AppendMessage(f"Captured {num_vars} variables")
+    
+    # Show available variables
+    result.AppendMessage("\nVariables available:")
+    for name, type_name in list(data.get('types', {}).items())[:10]:
+        result.AppendMessage(f"  {name}: {type_name}")
+    if len(data.get('types', {})) > 10:
+        result.AppendMessage(f"  ... and {len(data.get('types', {})) - 10} more")
+    
+    # Create embedded REPL session
+    try:
+        session = EmbeddedReplSession(frame)
+        result.AppendMessage("\nInitializing REPL engine...")
+        init_result = session.initialize()
+        result.AppendMessage(f"REPL ready. {init_result}")
+        
+        result.AppendMessage("\n" + "=" * 50)
+        result.AppendMessage("FerrumPy REPL - Type Rust expressions")
+        result.AppendMessage("Commands: :q (quit), :vars (show variables)")
+        result.AppendMessage("=" * 50 + "\n")
+        
+        # In test mode, exit immediately after initialization
+        if test_mode:
+            result.AppendMessage("Test mode: REPL initialized successfully, exiting.")
+            result.AppendMessage("REPL session ended.")
+            return
+        
+        # Interactive loop
+        while True:
+            try:
+                code = input(">> ")
+            except (EOFError, KeyboardInterrupt):
+                result.AppendMessage("\nExiting REPL...")
+                break
+            
+            code = code.strip()
+            if not code:
+                continue
+            
+            # Special commands
+            if code in (':q', ':quit', ':exit'):
+                result.AppendMessage("Exiting REPL...")
+                break
+            
+            if code == ':vars':
+                result.AppendMessage("Variables:")
+                for name, type_name in data.get('types', {}).items():
+                    result.AppendMessage(f"  {name}: {type_name}")
+                continue
+            
+            # Evaluate Rust code
+            try:
+                eval_result = session.eval(code)
+                if eval_result:
+                    print(eval_result)
+            except Exception as e:
+                print(f"Error: {e}")
+        
+        result.AppendMessage("REPL session ended.")
+        
+    except Exception as e:
+        result.SetError(f"Failed to create REPL: {e}")
+
+
+
+def _find_cargo_project(start_path: str) -> str:
+    """Find Cargo.toml by walking up the directory tree."""
+    import os
+    current = start_path
+    for _ in range(10):  # Max 10 levels up
+        cargo_toml = os.path.join(current, "Cargo.toml")
+        if os.path.exists(cargo_toml):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return None

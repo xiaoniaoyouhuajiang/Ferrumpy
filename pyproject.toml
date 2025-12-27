@@ -14,4 +14,5 @@ module-name = "ferrumpy.ferrumpy_core"
 bindings = "pyo3"
 manifest-path = "ferrumpy-core/Cargo.toml"
 features = ["python"]
-
+# Data files to include in the wheel
+data = "data"

@@ -8,9 +8,21 @@ and avoids manual memory reading when possible.
 import lldb
 import re
 from typing import Optional, Callable, Dict
+from dataclasses import dataclass, field
 
 # Registry of type patterns to formatter functions
-_FORMATTERS: Dict[str, Callable[[lldb.SBValue, bool], str]] = {}
+_FORMATTERS: Dict[str, Callable[[lldb.SBValue, "FormatOptions"], str]] = {}
+
+
+@dataclass
+class FormatOptions:
+    """Options for formatting values."""
+    expand: bool = False        # --expand: show more details
+    deep: bool = False          # --deep: recursive expand to max_depth
+    show_addr: bool = False     # --addr: show memory addresses
+    max_depth: int = 5          # Maximum recursion depth for --deep
+    truncate_at: int = 10       # Number of elements to show before truncating
+    show_truncate_end: int = 3  # Elements to show at end when truncating
 
 
 def register_providers(debugger: lldb.SBDebugger):
@@ -18,33 +30,55 @@ def register_providers(debugger: lldb.SBDebugger):
     pass
 
 
-def format_value(value: lldb.SBValue, expand: bool = False, depth: int = 0) -> str:
+def format_value(
+    value: lldb.SBValue,
+    expand: bool = False,
+    depth: int = 0,
+    options: Optional[FormatOptions] = None
+) -> str:
     """
     Format an SBValue using the appropriate pretty printer.
     """
     if not value.IsValid():
         return "<invalid>"
     
+    # Create default options if not provided
+    if options is None:
+        options = FormatOptions(expand=expand)
+    
+    # Check max depth for deep mode
+    if options.deep and depth > options.max_depth:
+        return "..."
+    
     type_name = value.GetType().GetName()
+    
+    # Address prefix if requested
+    addr_prefix = ""
+    if options.show_addr:
+        addr = value.GetLoadAddress()
+        if addr != lldb.LLDB_INVALID_ADDRESS:
+            addr_prefix = f"@ 0x{addr:x} "
     
     # Try to find a matching formatter
     for pattern, formatter in _FORMATTERS.items():
         if re.match(pattern, type_name):
             try:
-                return formatter(value, expand)
+                result = formatter(value, options, depth)
+                return addr_prefix + result
             except Exception as e:
                 # Fallback to default if formatter fails
-                return _format_default(value, expand, depth)
+                return addr_prefix + _format_default(value, options, depth)
     
     # Default formatting
-    return _format_default(value, expand, depth)
+    return addr_prefix + _format_default(value, options, depth)
 
 
-def _format_default(value: lldb.SBValue, expand: bool, depth: int) -> str:
+
+def _format_default(value: lldb.SBValue, options: FormatOptions, depth: int) -> str:
     """Default formatter for unknown types."""
     # Try LLDB's summary first - it often works well
     summary = value.GetSummary()
-    if summary:
+    if summary and not options.deep:
         return summary
     
     # Try value representation
@@ -55,16 +89,16 @@ def _format_default(value: lldb.SBValue, expand: bool, depth: int) -> str:
     # For compound types, iterate children
     num_children = value.GetNumChildren()
     if num_children > 0:
-        if expand:
-            return _format_struct_expanded(value, depth)
+        if options.expand or options.deep:
+            return _format_struct_expanded(value, options, depth)
         else:
-            return _format_struct_compact(value)
+            return _format_struct_compact(value, options)
     
     # Last resort: str() representation
     return str(value)
 
 
-def _format_struct_compact(value: lldb.SBValue) -> str:
+def _format_struct_compact(value: lldb.SBValue, options: FormatOptions) -> str:
     """Format a struct/enum compactly."""
     type_name = value.GetType().GetName()
     short_name = type_name.split("::")[-1]
@@ -74,7 +108,8 @@ def _format_struct_compact(value: lldb.SBValue) -> str:
         return short_name
     
     parts = []
-    for i in range(min(num_children, 3)):
+    show_count = min(num_children, 3)
+    for i in range(show_count):
         child = value.GetChildAtIndex(i)
         if not child.IsValid():
             continue
@@ -89,40 +124,44 @@ def _format_struct_compact(value: lldb.SBValue) -> str:
     return f"{short_name} {{ {', '.join(parts)} }}"
 
 
-def _format_struct_expanded(value: lldb.SBValue, depth: int) -> str:
+def _format_struct_expanded(value: lldb.SBValue, options: FormatOptions, depth: int) -> str:
     """Format a struct/enum with full details."""
     type_name = value.GetType().GetName()
     indent = "  " * depth
     child_indent = "  " * (depth + 1)
     
-    lines = [f"{type_name} {{"]
+    short_name = type_name.split("::")[-1]
+    lines = [f"{short_name} {{"]
     
     num_children = value.GetNumChildren()
-    for i in range(min(num_children, 20)):  # Limit children
+    max_show = 20 if options.deep else 10
+    
+    for i in range(min(num_children, max_show)):
         child = value.GetChildAtIndex(i)
         if not child.IsValid():
             continue
         child_name = child.GetName() or f"_{i}"
-        child_val = format_value(child, expand=True, depth=depth + 1)
+        child_val = format_value(child, depth=depth + 1, options=options)
         lines.append(f"{child_indent}{child_name}: {child_val},")
     
-    if num_children > 20:
-        lines.append(f"{child_indent}... ({num_children - 20} more)")
+    if num_children > max_show:
+        lines.append(f"{child_indent}... ({num_children - max_show} more)")
     
     lines.append(f"{indent}}}")
     return "\n".join(lines)
+
 
 
 # =============================================================================
 # String Formatters - Using LLDB's summary when available
 # =============================================================================
 
-def _format_string(value: lldb.SBValue, expand: bool) -> str:
+def _format_string(value: lldb.SBValue, options: FormatOptions, depth: int = 0) -> str:
     """Format alloc::string::String."""
     # First try LLDB's built-in summary
     summary = value.GetSummary()
     if summary:
-        if expand:
+        if options.expand:
             # Try to get length info
             vec = value.GetChildMemberWithName("vec")
             if vec.IsValid():
@@ -135,11 +174,11 @@ def _format_string(value: lldb.SBValue, expand: bool) -> str:
     # Fallback: try to read via children
     vec = value.GetChildMemberWithName("vec")
     if not vec.IsValid():
-        return _format_default(value, expand, 0)
+        return _format_default(value, options, depth)
     
     len_child = vec.GetChildMemberWithName("len")
     if not len_child.IsValid():
-        return _format_default(value, expand, 0)
+        return _format_default(value, options, depth)
     
     length = len_child.GetValueAsUnsigned()
     
@@ -174,7 +213,7 @@ def _format_string(value: lldb.SBValue, expand: bool) -> str:
         text = _escape_string(text)
         if length > 256:
             text += "..."
-        if expand:
+        if options.expand:
             return f'"{text}"  (len={length})'
         return f'"{text}"'
     except UnicodeDecodeError:
@@ -253,17 +292,16 @@ def _escape_string(text: str) -> str:
 # Vec Formatter
 # =============================================================================
 
-def _format_vec(value: lldb.SBValue, expand: bool) -> str:
+def _format_vec(value: lldb.SBValue, options: FormatOptions, depth: int = 0) -> str:
     """
     Format alloc::vec::Vec<T>.
     
-    TODO: [DWARF-DRIVEN] This function uses hardcoded structure assumptions.
-    Future versions should use DWARF type information for reliable element access.
+    Supports smart truncation for large vectors.
     """
     # Get length
     len_child = value.GetChildMemberWithName("len")
     if not len_child.IsValid():
-        return _format_default(value, expand, 0)
+        return _format_default(value, options, depth)
     
     length = len_child.GetValueAsUnsigned()
     
@@ -271,17 +309,14 @@ def _format_vec(value: lldb.SBValue, expand: bool) -> str:
     cap = 0
     buf = value.GetChildMemberWithName("buf")
     if buf.IsValid():
-        # Try direct cap
         cap_child = buf.GetChildMemberWithName("cap")
         if cap_child.IsValid():
             cap = cap_child.GetValueAsUnsigned()
         else:
-            # Try inner.cap (Rust 1.70+)
             inner = buf.GetChildMemberWithName("inner")
             if inner.IsValid():
                 cap_child = inner.GetChildMemberWithName("cap")
                 if cap_child.IsValid():
-                    # cap might be wrapped in a struct with __0
                     inner_cap = cap_child.GetChildMemberWithName("__0")
                     if inner_cap.IsValid():
                         cap = inner_cap.GetValueAsUnsigned()
@@ -289,7 +324,7 @@ def _format_vec(value: lldb.SBValue, expand: bool) -> str:
                         cap = cap_child.GetValueAsUnsigned()
     
     if length == 0:
-        if expand:
+        if options.expand:
             return f"[]  (len=0, cap={cap})"
         return "[]"
     
@@ -310,34 +345,48 @@ def _format_vec(value: lldb.SBValue, expand: bool) -> str:
     if ptr_addr == 0:
         return "[]"
     
-    # Format elements by reading from memory
-    elements = []
-    max_display = 10 if expand else 5
+    # Smart truncation settings
+    max_display = options.truncate_at
+    show_end = options.show_truncate_end
     
-    for i in range(min(length, max_display)):
-        addr = ptr_addr + i * elem_size
-        elem = value.CreateValueFromAddress(f"[{i}]", addr, elem_type)
+    def get_element(idx: int) -> str:
+        addr = ptr_addr + idx * elem_size
+        elem = value.CreateValueFromAddress(f"[{idx}]", addr, elem_type)
         if elem.IsValid():
-            elem_str = format_value(elem, expand=False, depth=0)
-            elements.append(elem_str)
-        else:
-            elements.append("?")
+            return format_value(elem, depth=depth + 1, options=FormatOptions())
+        return "?"
     
-    if length > max_display:
+    elements = []
+    
+    if length <= max_display:
+        # Show all elements
+        for i in range(length):
+            elements.append(get_element(i))
+    else:
+        # Smart truncation: show first N, ..., last M
+        show_start = max_display - show_end
+        
+        for i in range(show_start):
+            elements.append(get_element(i))
+        
         elements.append(f"... ({length - max_display} more)")
+        
+        for i in range(length - show_end, length):
+            elements.append(get_element(i))
     
     result = f"[{', '.join(elements)}]"
-    if expand:
+    if options.expand:
         result += f"  (len={length}, cap={cap})"
     
     return result
+
 
 
 # =============================================================================
 # Option/Result Formatters - Simplified
 # =============================================================================
 
-def _format_option(value: lldb.SBValue, expand: bool) -> str:
+def _format_option(value: lldb.SBValue, options: FormatOptions, depth: int = 0) -> str:
     """Format core::option::Option<T>."""
     type_name = value.GetType().GetName()
     
@@ -348,7 +397,7 @@ def _format_option(value: lldb.SBValue, expand: bool) -> str:
     if type_name.endswith("::Some"):
         inner = _get_enum_payload(value, 1)  # Some is variant 1
         if inner.IsValid():
-            inner_str = format_value(inner, expand=expand)
+            inner_str = format_value(inner, depth=depth+1, options=options)
             return f"Some({inner_str})"
         return "Some(?)"
     
@@ -369,7 +418,7 @@ def _format_option(value: lldb.SBValue, expand: bool) -> str:
                     if val_wrapper.IsValid():
                         inner = val_wrapper.GetChildMemberWithName("__0")
                         if inner.IsValid():
-                            return f"Some({format_value(inner, expand=expand)})"
+                            return f"Some({format_value(inner, depth=depth+1, options=options)})"
                     return "Some(?)"
     
     # For simple discriminant at top level
@@ -380,7 +429,7 @@ def _format_option(value: lldb.SBValue, expand: bool) -> str:
             return "None"
         inner = _get_enum_payload_simple(value)
         if inner.IsValid():
-            return f"Some({format_value(inner, expand=expand)})"
+            return f"Some({format_value(inner, depth=depth+1, options=options)})"
         return "Some(?)"
     
     # Try LLDB summary
@@ -388,7 +437,7 @@ def _format_option(value: lldb.SBValue, expand: bool) -> str:
     if summary:
         return summary
     
-    return _format_default(value, expand, 0)
+    return _format_default(value, options, depth)
 
 
 def _get_enum_payload_simple(value: lldb.SBValue) -> lldb.SBValue:
@@ -429,7 +478,7 @@ def _get_enum_payload(value: lldb.SBValue, variant_index: int) -> lldb.SBValue:
     return _get_enum_payload_simple(value)
 
 
-def _format_result(value: lldb.SBValue, expand: bool) -> str:
+def _format_result(value: lldb.SBValue, options: FormatOptions, depth: int = 0) -> str:
     """Format core::result::Result<T, E>."""
     type_name = value.GetType().GetName()
     
@@ -437,13 +486,13 @@ def _format_result(value: lldb.SBValue, expand: bool) -> str:
     if type_name.endswith("::Ok"):
         inner = _get_enum_payload(value, 0)
         if inner.IsValid():
-            return f"Ok({format_value(inner, expand=expand)})"
+            return f"Ok({format_value(inner, options=options)})"
         return "Ok(?)"
     
     if type_name.endswith("::Err"):
         inner = _get_enum_payload(value, 1)
         if inner.IsValid():
-            return f"Err({format_value(inner, expand=expand)})"
+            return f"Err({format_value(inner, options=options)})"
         return "Err(?)"
     
     # Check for $variants$ structure (niche optimization)
@@ -474,7 +523,7 @@ def _format_result(value: lldb.SBValue, expand: bool) -> str:
                     if val_wrapper.IsValid():
                         inner = val_wrapper.GetChildMemberWithName("__0")
                         if inner.IsValid():
-                            return f"Ok({format_value(inner, expand=expand)})"
+                            return f"Ok({format_value(inner, options=options)})"
                     return "Ok(?)"
                 else:
                     # This is Err variant - value is in $variant$.value.__0
@@ -483,7 +532,7 @@ def _format_result(value: lldb.SBValue, expand: bool) -> str:
                         if val_wrapper.IsValid():
                             inner = val_wrapper.GetChildMemberWithName("__0")
                             if inner.IsValid():
-                                return f"Err({format_value(inner, expand=expand)})"
+                                return f"Err({format_value(inner, options=options)})"
                     # Fallback: try $variant$1
                     variant1 = variants.GetChildMemberWithName("$variant$1")
                     if variant1.IsValid():
@@ -491,7 +540,7 @@ def _format_result(value: lldb.SBValue, expand: bool) -> str:
                         if val_wrapper.IsValid():
                             inner = val_wrapper.GetChildMemberWithName("__0")
                             if inner.IsValid():
-                                return f"Err({format_value(inner, expand=expand)})"
+                                return f"Err({format_value(inner, options=options)})"
                     return "Err(?)"
     
     # For simple discriminant at top level
@@ -501,11 +550,11 @@ def _format_result(value: lldb.SBValue, expand: bool) -> str:
         inner = _get_enum_payload_simple(value)
         if discr_val == 0:
             if inner.IsValid():
-                return f"Ok({format_value(inner, expand=expand)})"
+                return f"Ok({format_value(inner, options=options)})"
             return "Ok(?)"
         else:
             if inner.IsValid():
-                return f"Err({format_value(inner, expand=expand)})"
+                return f"Err({format_value(inner, options=options)})"
             return "Err(?)"
     
     # Use summary if available
@@ -520,12 +569,12 @@ def _format_result(value: lldb.SBValue, expand: bool) -> str:
 # Smart Pointer Formatters
 # =============================================================================
 
-def _format_box(value: lldb.SBValue, expand: bool) -> str:
+def _format_box(value: lldb.SBValue, options: FormatOptions, depth: int = 0) -> str:
     """Format alloc::boxed::Box<T>."""
     # Try to dereference
     inner = value.Dereference()
     if inner.IsValid():
-        inner_str = format_value(inner, expand=expand)
+        inner_str = format_value(inner, options=options)
         return f"Box({inner_str})"
     
     # Try first child
@@ -533,13 +582,13 @@ def _format_box(value: lldb.SBValue, expand: bool) -> str:
     if inner.IsValid():
         deref = inner.Dereference()
         if deref.IsValid():
-            return f"Box({format_value(deref, expand=expand)})"
-        return f"Box({format_value(inner, expand=expand)})"
+            return f"Box({format_value(deref, options=options)})"
+        return f"Box({format_value(inner, options=options)})"
     
     return "Box(?)"
 
 
-def _format_arc(value: lldb.SBValue, expand: bool) -> str:
+def _format_arc(value: lldb.SBValue, options: FormatOptions, depth: int = 0) -> str:
     """Format alloc::sync::Arc<T>."""
     # Try to get ptr -> NonNull -> pointer -> ArcInner
     ptr = value.GetChildMemberWithName("ptr")
@@ -557,8 +606,8 @@ def _format_arc(value: lldb.SBValue, expand: bool) -> str:
                 weak = inner.GetChildMemberWithName("weak")
                 
                 if data.IsValid():
-                    data_str = format_value(data, expand=expand)
-                    if expand and strong.IsValid():
+                    data_str = format_value(data, options=options)
+                    if options.expand and strong.IsValid():
                         s = strong.GetValueAsUnsigned()
                         w = weak.GetValueAsUnsigned() if weak.IsValid() else 0
                         return f"Arc({data_str})  (strong={s}, weak={w})"
@@ -572,7 +621,7 @@ def _format_arc(value: lldb.SBValue, expand: bool) -> str:
     return "Arc(...)"
 
 
-def _format_rc(value: lldb.SBValue, expand: bool) -> str:
+def _format_rc(value: lldb.SBValue, options: FormatOptions, depth: int = 0) -> str:
     """Format alloc::rc::Rc<T>."""
     # Similar to Arc but different structure
     ptr = value.GetChildMemberWithName("ptr")
@@ -588,8 +637,8 @@ def _format_rc(value: lldb.SBValue, expand: bool) -> str:
                 strong = inner.GetChildMemberWithName("strong")
                 
                 if value_child.IsValid():
-                    data_str = format_value(value_child, expand=expand)
-                    if expand and strong.IsValid():
+                    data_str = format_value(value_child, options=options)
+                    if options.expand and strong.IsValid():
                         s = strong.GetValueAsUnsigned()
                         return f"Rc({data_str})  (strong={s})"
                     return f"Rc({data_str})"
@@ -605,7 +654,7 @@ def _format_rc(value: lldb.SBValue, expand: bool) -> str:
 # HashMap Formatter
 # =============================================================================
 
-def _format_hashmap(value: lldb.SBValue, expand: bool) -> str:
+def _format_hashmap(value: lldb.SBValue, options: FormatOptions, depth: int = 0) -> str:
     """Format HashMap - just show count for now."""
     # Try to get length from various possible paths
     base = value.GetChildMemberWithName("base")

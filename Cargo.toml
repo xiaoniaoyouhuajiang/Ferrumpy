@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "ferrumpy-core",
     "ferrumpy-server",
+    "ferrumpy-repl-worker",
 ]
 
 [workspace.package]

@@ -1,0 +1,14 @@
+[package]
+name = "ferrumpy-repl-worker"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "REPL worker process for FerrumPy"
+
+[[bin]]
+name = "ferrumpy-repl-worker"
+path = "src/main.rs"
+
+[dependencies]
+evcxr = "0.21"
+anyhow = "1"

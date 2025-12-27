@@ -179,14 +179,24 @@ def _resolve_segment(value: lldb.SBValue, segment: PathSegment) -> lldb.SBValue:
         )
     
     elif isinstance(segment, IndexSegment):
+        type_name = value.GetType().GetName()
+        
+        # Special handling for Vec<T>
+        if 'alloc::vec::Vec<' in type_name:
+            return _resolve_vec_index(value, segment.index)
+        
+        # Special handling for arrays [T; N]
+        if type_name.startswith('[') and ';' in type_name:
+            return _resolve_array_index(value, segment.index)
+        
         # Try synthetic children first (for Vec, etc.)
         child = value.GetChildAtIndex(segment.index, lldb.eNoDynamicValues, True)
-        if child.IsValid():
+        if child.IsValid() and child.GetName() and not child.GetName().startswith('buf'):
             return child
         
         # Try array access
         child = value.GetChildAtIndex(segment.index)
-        if child.IsValid():
+        if child.IsValid() and child.GetName() and not child.GetName().startswith('buf'):
             return child
         
         raise PathResolutionError(
@@ -224,3 +234,102 @@ def _is_smart_pointer_type(type_name: str) -> bool:
         r'^core::cell::RefMut<',
     ]
     return any(re.match(p, type_name) for p in smart_pointer_patterns)
+
+
+def _resolve_vec_index(value: lldb.SBValue, index: int) -> lldb.SBValue:
+    """
+    Resolve Vec<T>[index] by accessing the element via data pointer.
+    """
+    # Get vec length
+    len_child = value.GetChildMemberWithName("len")
+    if not len_child.IsValid():
+        raise PathResolutionError("Cannot access Vec length")
+    
+    length = len_child.GetValueAsUnsigned()
+    
+    if index < 0 or index >= length:
+        raise PathResolutionError(f"Index [{index}] out of bounds (len={length})")
+    
+    # Get element type
+    vec_type = value.GetType()
+    elem_type = vec_type.GetTemplateArgumentType(0)
+    if not elem_type.IsValid():
+        raise PathResolutionError("Cannot determine Vec element type")
+    
+    elem_size = elem_type.GetByteSize()
+    
+    # Get data pointer through buf
+    buf = value.GetChildMemberWithName("buf")
+    if not buf.IsValid():
+        raise PathResolutionError("Cannot access Vec buffer")
+    
+    ptr = _find_pointer_in_buf(buf)
+    if ptr is None or not ptr.IsValid():
+        raise PathResolutionError("Cannot access Vec data pointer")
+    
+    ptr_addr = ptr.GetValueAsUnsigned()
+    if ptr_addr == 0:
+        raise PathResolutionError("Vec data pointer is null")
+    
+    # Create element value from address
+    addr = ptr_addr + index * elem_size
+    elem = value.CreateValueFromAddress(f"[{index}]", addr, elem_type)
+    
+    if not elem.IsValid():
+        raise PathResolutionError(f"Cannot access element at index [{index}]")
+    
+    return elem
+
+
+def _resolve_array_index(value: lldb.SBValue, index: int) -> lldb.SBValue:
+    """
+    Resolve [T; N][index] by accessing the element directly.
+    """
+    num_children = value.GetNumChildren()
+    
+    if index < 0 or index >= num_children:
+        raise PathResolutionError(f"Index [{index}] out of bounds (len={num_children})")
+    
+    child = value.GetChildAtIndex(index)
+    if not child.IsValid():
+        raise PathResolutionError(f"Cannot access element at index [{index}]")
+    
+    return child
+
+
+def _find_pointer_in_buf(buf: lldb.SBValue) -> Optional[lldb.SBValue]:
+    """
+    Navigate through RawVec/Unique/NonNull to find the actual data pointer.
+    
+    Known structure variations:
+    - Rust 1.70+: buf.inner.ptr.pointer.pointer
+    - Rust 1.60+: buf.ptr.pointer.pointer  
+    - Older: buf.ptr.pointer
+    """
+    POINTER_PATTERNS = [
+        ["inner", "ptr", "pointer", "pointer"],
+        ["ptr", "pointer", "pointer"],
+        ["ptr", "pointer"],
+        ["pointer"],
+    ]
+    
+    for pattern in POINTER_PATTERNS:
+        result = _navigate_path(buf, pattern)
+        if result is not None and result.IsValid():
+            return result
+    
+    return None
+
+
+def _navigate_path(value: lldb.SBValue, path: list) -> Optional[lldb.SBValue]:
+    """Navigate a path of field names through an SBValue."""
+    current = value
+    for field_name in path:
+        if not current.IsValid():
+            return None
+        child = current.GetChildMemberWithName(field_name)
+        if not child.IsValid():
+            return None
+        current = child
+    return current
+
