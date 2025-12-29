@@ -83,35 +83,203 @@ PRIMITIVE_TYPES = {
 
 
 def normalize_type_name(lldb_type: str) -> str:
-    """Convert LLDB type name to Rust source type name."""
-    # First, map C types to Rust types
+    """
+    Convert LLDB type name to clean Rust source type name.
+    
+    This function handles:
+    1. C-style type names -> Rust types (int -> i32)
+    2. Allocator removal (Vec<i32, Global> -> Vec<i32>)
+    3. Module path simplification (alloc::vec::Vec -> Vec)
+    4. Crate path extraction (my_crate::User -> User)
+    5. Recursive normalization of nested generics
+    """
+    if not lldb_type:
+        return lldb_type
+    
+    # Step 1: Remove all allocator parameters first (before any other processing)
+    lldb_type = _remove_allocators(lldb_type)
+    
+    # Step 2: Map simple C types to Rust types
     if lldb_type in C_TO_RUST_TYPES:
         return C_TO_RUST_TYPES[lldb_type]
     
-    # Try each normalization rule in order
+    # Step 3: Apply normalization rules (module path simplification)
     for pattern, replacement in TYPE_NORMALIZATION:
         if re.match(pattern, lldb_type):
             result = re.sub(pattern, replacement, lldb_type)
             # Recursively normalize inner types
             return _normalize_inner_types(result)
     
-    # For user types, extract the last component
-    # e.g., "my_crate::models::User" -> "User"
-    if '::' in lldb_type:
-        parts = lldb_type.split('::')
-        # Keep generics if present
-        last = parts[-1]
-        return last
+    # Step 4: Handle generic types with C types inside
+    if '<' in lldb_type:
+        return _normalize_generic_type(lldb_type)
+    
+    # Step 5: For unrecognized types with crate paths, extract last component
+    if '::' in lldb_type and not lldb_type.startswith('&'):
+        return _extract_type_name(lldb_type)
     
     return lldb_type
 
 
+def _remove_allocators(type_str: str) -> str:
+    """
+    Remove allocator parameters from type strings.
+    
+    Examples:
+        Vec<i32, alloc::alloc::Global> -> Vec<i32>
+        Vec<Vec<i32, alloc::alloc::Global>, alloc::alloc::Global> -> Vec<Vec<i32>>
+        HashMap<String, i32, std::hash::random::RandomState> -> HashMap<String, i32>
+    """
+    # Patterns for allocator/hasher parameters to remove
+    allocator_patterns = [
+        r',\s*alloc::alloc::Global',
+        r',\s*Global',
+        r',\s*std::hash::random::RandomState',
+        r',\s*std::collections::hash::map::RandomState',
+    ]
+    
+    result = type_str
+    for pattern in allocator_patterns:
+        result = re.sub(pattern, '', result)
+    
+    return result
+
+
+def _normalize_generic_type(type_str: str) -> str:
+    """
+    Normalize a generic type by processing outer type and inner types separately.
+    
+    Examples:
+        Vec<int> -> Vec<i32>
+        Option<unsigned long> -> Option<u64>
+        Result<int, alloc::string::String> -> Result<i32, String>
+    """
+    # Find the outer type name and generic parameters
+    match = re.match(r'^([^<]+)<(.+)>$', type_str)
+    if not match:
+        return type_str
+    
+    outer = match.group(1)
+    inner = match.group(2)
+    
+    # Normalize outer type (remove module paths)
+    outer = _simplify_module_path(outer)
+    
+    # Split inner types carefully (handling nested generics)
+    inner_types = _split_generic_params(inner)
+    
+    # Normalize each inner type recursively
+    normalized_inner = [normalize_type_name(t.strip()) for t in inner_types]
+    
+    return f"{outer}<{', '.join(normalized_inner)}>"
+
+
+def _split_generic_params(params: str) -> List[str]:
+    """
+    Split generic parameters respecting nested angle brackets.
+    
+    Examples:
+        "i32, String" -> ["i32", "String"]
+        "Vec<i32>, Option<String>" -> ["Vec<i32>", "Option<String>"]
+    """
+    result = []
+    current = ""
+    depth = 0
+    
+    for char in params:
+        if char == '<':
+            depth += 1
+            current += char
+        elif char == '>':
+            depth -= 1
+            current += char
+        elif char == ',' and depth == 0:
+            result.append(current.strip())
+            current = ""
+        else:
+            current += char
+    
+    if current.strip():
+        result.append(current.strip())
+    
+    return result
+
+
+def _simplify_module_path(type_name: str) -> str:
+    """
+    Simplify module paths to just the type name.
+    
+    Examples:
+        alloc::vec::Vec -> Vec
+        alloc::string::String -> String
+        core::option::Option -> Option
+        std::collections::HashMap -> HashMap
+    """
+    known_types = {
+        'alloc::vec::Vec': 'Vec',
+        'alloc::string::String': 'String',
+        'core::option::Option': 'Option',
+        'core::result::Result': 'Result',
+        'alloc::boxed::Box': 'Box',
+        'alloc::sync::Arc': 'Arc',
+        'alloc::rc::Rc': 'Rc',
+        'std::collections::hash::map::HashMap': 'HashMap',
+        'std::collections::HashMap': 'HashMap',
+        'std::cell::RefCell': 'RefCell',
+        'std::cell::Cell': 'Cell',
+    }
+    
+    if type_name in known_types:
+        return known_types[type_name]
+    
+    # For unknown types, extract last component
+    if '::' in type_name:
+        return type_name.split('::')[-1]
+    
+    return type_name
+
+
+def _extract_type_name(full_path: str) -> str:
+    """
+    Extract the type name from a full crate path.
+    
+    Examples:
+        rust_sample::User -> User
+        my_crate::models::Config -> Config
+        alloc::string::String -> String
+    """
+    if not '::' in full_path:
+        return full_path
+    
+    # Handle generics: my_crate::Wrapper<T> -> Wrapper<T>
+    if '<' in full_path:
+        match = re.match(r'^([^<]+)<(.+)>$', full_path)
+        if match:
+            outer = match.group(1).split('::')[-1]
+            inner = match.group(2)
+            # Recursively normalize inner types
+            inner_normalized = normalize_type_name(inner)
+            return f"{outer}<{inner_normalized}>"
+    
+    return full_path.split('::')[-1]
+
+
 def _normalize_inner_types(type_str: str) -> str:
-    """Recursively normalize types inside generics."""
-    # Replace C types in generic parameters
-    for c_type, rust_type in C_TO_RUST_TYPES.items():
-        # Match as whole word to avoid partial replacements
-        type_str = re.sub(rf'\b{re.escape(c_type)}\b', rust_type, type_str)
+    """
+    Recursively normalize types inside generics.
+    
+    This handles C types in generic parameters:
+        Vec<int> -> Vec<i32>
+        Option<unsigned long> -> Option<u64>
+    """
+    # If this is a generic type, parse and normalize recursively
+    if '<' in type_str:
+        return _normalize_generic_type(type_str)
+    
+    # Replace C types
+    if type_str in C_TO_RUST_TYPES:
+        return C_TO_RUST_TYPES[type_str]
+    
     return type_str
 
 

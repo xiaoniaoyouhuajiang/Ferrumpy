@@ -70,6 +70,79 @@ expect {
     }
 }
 
+# ========================================
+# Test 3: Snapshot Variable Access Tests
+# ========================================
+# These test that captured variables from the debugged process are accessible
+
+# Test 3a: Access simple_string (String type)
+expect ">>"
+send "simple_string.clone()\r"
+expect {
+    "Hello" {
+        puts "✓ Snapshot variable 'simple_string' accessible"
+    }
+    "error" {
+        puts "\n✗ FAILED: Cannot access snapshot variable 'simple_string'"
+        exit 1
+    }
+    timeout {
+        puts "\n✗ Timeout accessing 'simple_string'"
+        exit 1
+    }
+}
+
+# Test 3b: Access numbers (Vec<i32>)
+expect ">>"
+send "numbers.len()\r"
+expect {
+    "5" {
+        puts "✓ Snapshot variable 'numbers' accessible (len=5)"
+    }
+    "error" {
+        puts "\n✗ FAILED: Cannot access snapshot variable 'numbers'"
+        exit 1
+    }
+    timeout {
+        puts "\n✗ Timeout accessing 'numbers'"
+        exit 1
+    }
+}
+
+# Test 3c: Access ok_result (Result<i32, String> or serde_json::Value)
+expect ">>"
+send "ok_result\r"
+expect {
+    -re "Ok|Err|Object|Number|String|Null|Array" {
+        puts "✓ Snapshot variable 'ok_result' accessible"
+    }
+    "cannot find value" {
+        puts "\n✗ FAILED: Cannot access snapshot variable 'ok_result'"
+        exit 1
+    }
+    timeout {
+        puts "\n✗ Timeout accessing 'ok_result'"
+        exit 1
+    }
+}
+
+# Test 3d: Access map (HashMap<String, i32> or serde_json::Value)
+expect ">>"
+send "map\r"
+expect {
+    -re "Object|Number|String|Null|Array" {
+        puts "✓ Snapshot variable 'map' accessible"
+    }
+    "cannot find value" {
+        puts "\n✗ FAILED: Cannot access snapshot variable 'map'"
+        exit 1
+    }
+    timeout {
+        puts "\n✗ Timeout accessing 'map'"
+        exit 1
+    }
+}
+
 # Exit REPL
 expect ">>"
 send ":q\r"

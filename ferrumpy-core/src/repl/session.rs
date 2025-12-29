@@ -235,13 +235,19 @@ impl ReplSession {
 
                     // Determine the actual type to use
                     // For unsupported types, fallback to serde_json::Value (don't skip!)
-                    let actual_type = if self.is_supported_type(type_hint) {
+                    let mut actual_type = if self.is_supported_type(type_hint) {
                         // Transform type hint: clean up and normalize
                         self.normalize_rust_type(type_hint)
                     } else {
                         // Fallback: use generic JSON value
                         "serde_json::Value".to_string()
                     };
+
+                    // Check if the serialized value is valid for the type
+                    // E.g., empty strings or error markers like __result__ can't be deserialized
+                    if !self.is_valid_for_deserialization(value, &actual_type) {
+                        actual_type = "serde_json::Value".to_string();
+                    }
 
                     let code = self.generate_typed_var_code(name, value, &actual_type)?;
                     all_code.push_str(&code);
@@ -423,52 +429,94 @@ impl ReplSession {
     }
 
     /// Check if a type is supported for snapshot restoration
-    /// Only allow simple, safe types to avoid code generation issues
+    /// With improved type normalization from Python, we can now support more types
     fn is_supported_type(&self, type_hint: &str) -> bool {
-        // Skip pointer types
+        // Skip pointer types (raw pointers)
         if type_hint.contains(" *") || type_hint.contains("*const") || type_hint.contains("*mut") {
             return false;
         }
-        // Skip references
+
+        // Skip references (can't deserialize references)
         if type_hint.starts_with("&") {
             return false;
         }
-        // Skip smart pointers (Arc/Rc/Box can't easily serde deserialize)
+
+        // Skip smart pointers (Arc/Rc/Box don't implement Deserialize by default)
+        // These require special serde features to deserialize
         if type_hint.contains("Arc<") || type_hint.contains("Rc<") || type_hint.contains("Box<") {
             return false;
         }
-        // Skip RefCell/Cell (complex internal state)
+
+        // Skip RefCell/Cell (complex internal state, can't deserialize)
         if type_hint.contains("RefCell<") || type_hint.contains("Cell<") {
             return false;
         }
-        // Skip allocator types (Global)
+
+        // Skip allocator types (should be normalized away by Python, but double-check)
         if type_hint.contains("Global") || type_hint.contains("alloc::") {
             return false;
         }
-        // Skip arrays (int[5] format)
+
+        // Skip C-style arrays (int[5] format - should be normalized, but check)
         if type_hint.contains("[") && type_hint.contains("]") && !type_hint.starts_with("Vec") {
             return false;
         }
-        // Skip tuples
-        if type_hint.starts_with("(") {
+
+        // Skip tuples containing references (e.g., (&str, i32))
+        if type_hint.starts_with("(") && type_hint.contains("&") {
             return false;
         }
-        // Skip nested generics (Vec<Vec<...>>, HashMap, etc) - too complex
-        if type_hint.matches('<').count() > 1 {
-            return false;
-        }
-        // Skip Result (complex deserialization)
-        if type_hint.starts_with("Result<") || type_hint.contains("Result<") {
-            return false;
-        }
-        // Skip HashMap (not trivially serializable)
-        if type_hint.contains("HashMap<") {
-            return false;
-        }
+
         // Skip unknown types
-        if type_hint == "?" {
+        if type_hint == "?" || type_hint.is_empty() {
             return false;
         }
+
+        // NOW ALLOW:
+        // - Result<T, E> (serde can deserialize)
+        // - HashMap<K, V> (serde can deserialize)
+        // - Nested generics Vec<Vec<T>> (now properly normalized)
+        // - User-defined types (Config, User etc. from companion lib)
+        // - Tuples without references (T1, T2, T3)
+
+        true
+    }
+
+    /// Check if a serialized value is valid for deserialization to the target type
+    /// Returns false for values that would cause serde::from_str to panic
+    fn is_valid_for_deserialization(&self, value: &serde_json::Value, type_hint: &str) -> bool {
+        // Empty strings cannot be deserialized to most types
+        if let Some(s) = value.as_str() {
+            if s.is_empty() {
+                return false;
+            }
+        }
+
+        // Check for error marker objects from Python serializer
+        if let Some(obj) = value.as_object() {
+            for key in obj.keys() {
+                // These markers indicate serialization failed in Python
+                if key.starts_with("__") && key.ends_with("__") {
+                    return false;
+                }
+            }
+
+            // For Result<T, E>, need {"Ok": ...} or {"Err": ...} format
+            if type_hint.starts_with("Result<") {
+                if !obj.contains_key("Ok") && !obj.contains_key("Err") {
+                    return false;
+                }
+            }
+
+            // For HashMap<K, V>, the object should be a simple key-value map
+            // (not containing error markers, which we already checked)
+        }
+
+        // serde_json::Value can always be deserialized
+        if type_hint == "serde_json::Value" {
+            return true;
+        }
+
         true
     }
 

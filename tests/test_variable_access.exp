@@ -1,0 +1,77 @@
+#!/usr/bin/expect -f
+# Test REPL variable access
+
+set timeout 120
+set project_root [lindex $argv 0]
+
+spawn lldb $project_root/tests/rust_sample/target/debug/rust_sample
+
+expect "(lldb)"
+send "command script import $project_root/python/ferrumpy\r"
+
+expect "(lldb)"
+send "b main.rs:94\r"
+
+expect "(lldb)"
+send "run\r"
+
+expect "(lldb)"
+send "ferrumpy repl\r"
+
+# Wait for REPL prompt
+expect {
+    ">> " {
+        puts "\n✓ REPL initialized"
+    }
+    "error:" {
+        puts "\n✗ REPL initialization failed"
+        exit 1
+    }
+    timeout {
+        puts "\n✗ REPL initialization timeout"
+        exit 1
+    }
+}
+
+# Test accessing a simple variable
+send "simple_string\r"
+
+expect {
+    "\"Hello" {
+        puts "\n✓ Variable access works"
+    }
+    "error" {
+        puts "\n✗ Variable access failed with error"
+    }
+    timeout {
+        puts "\n✗ Variable access timeout"
+    }
+}
+
+# Capture and print the output
+expect ">> "
+
+# Test another variable
+send "numbers\r"
+
+expect {
+    -re {\[.*\]} {
+        puts "\n✓ Vec variable works"
+    }
+    "error" {
+        puts "\n✗ Vec variable failed"
+    }
+}
+
+expect ">> "
+
+# Exit REPL
+send ":q\r"
+
+expect "(lldb)"
+send "kill\r"
+
+expect "(lldb)"
+send "quit\r"
+
+puts "\n=== Variable Access Test Complete ==="

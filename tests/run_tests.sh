@@ -63,6 +63,15 @@ print(f'Tokenizer: {passed}/{passed+failed} passed')
 sys.exit(1 if failed > 0 else 0)
 PYTHON_SCRIPT
 
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+    
+    echo
+    echo "--- Type Normalization Tests ---"
+    echo
+    python3 "$PROJECT_ROOT/tests/test_type_normalization.py"
+
     return $?
 }
 
