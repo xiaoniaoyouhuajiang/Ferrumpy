@@ -177,6 +177,18 @@ impl PyReplSession {
             .add_path_dep(name, std::path::Path::new(path))
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
     }
+
+    /// Add a path dependency silently (no compilation until next eval)
+    fn add_path_dep_silent(&mut self, name: &str, path: &str) -> PyResult<()> {
+        let session = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Session not initialized"))?;
+
+        session
+            .add_path_dep_silent(name, std::path::Path::new(path))
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
 }
 
 /// Generate a companion lib crate from a user's project

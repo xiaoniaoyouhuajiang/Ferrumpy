@@ -426,18 +426,25 @@ class EmbeddedReplSession:
         """
         session = self._get_rust_session()
         
-        # Step 1: Generate and load companion lib (for user types)
+        # Step 1: Generate companion lib (for user types)
         self._lib_path, self._lib_name = self._generate_companion_lib()
+        
+        # Step 2: Register lib dep silently (no compilation yet)
+        lib_use_stmt = ""
         if self._lib_path and self._lib_name:
             try:
-                session.add_path_dep(self._lib_name, self._lib_path)
-                session.eval(f"use {self._lib_name}::*;")
+                # Use silent mode - no compilation until load_snapshot
+                session.add_path_dep_silent(self._lib_name, self._lib_path)
+                lib_use_stmt = f"use {self._lib_name}::*;"
             except Exception as e:
-                print(f"Warning: Failed to load companion lib: {e}")
+                print(f"Warning: Failed to register companion lib: {e}")
         
-        # Step 2: Load variable snapshot
+        # Step 3: Load variable snapshot (single compilation with all deps)
         if self.frame:
             data = serialize_frame(self.frame)
+            # Prepend lib use statement to snapshot data for single compilation
+            if lib_use_stmt:
+                data['lib_use_stmt'] = lib_use_stmt
             json_data = json.dumps(data)
             type_hints = ",".join(
                 f"{k}:{v}" for k, v in data.get('types', {}).items()
@@ -446,6 +453,9 @@ class EmbeddedReplSession:
             self._initialized = True
             return result
         else:
+            # If no frame, still need to compile lib dep
+            if lib_use_stmt:
+                session.eval(lib_use_stmt)
             self._initialized = True
             return "Initialized (no frame data)"
     

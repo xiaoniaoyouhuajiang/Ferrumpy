@@ -602,10 +602,47 @@ def _cmd_repl(
             result.AppendMessage("REPL session ended.")
             return
         
+        # Try to use prompt_toolkit for better UX, fallback to input()
+        # Only use prompt_toolkit if running in a real TTY (not in expect/script)
+        import sys
+        use_prompt_toolkit = False
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            try:
+                from prompt_toolkit import prompt as pt_prompt
+                from prompt_toolkit.history import InMemoryHistory
+                history = InMemoryHistory()
+                use_prompt_toolkit = True
+            except ImportError:
+                pass
+        
+        def get_input(prompt_str: str) -> str:
+            """Get user input with optional prompt_toolkit support."""
+            if use_prompt_toolkit:
+                return pt_prompt(prompt_str, history=history)
+            print(prompt_str, end='', flush=True)
+            return input()
+        
+        def format_error(error_msg: str) -> str:
+            """Format error message for better readability."""
+            lines = str(error_msg).split('\n')
+            formatted = []
+            for line in lines[:15]:  # Limit to first 15 lines
+                if 'error' in line.lower():
+                    formatted.append(f"\033[91m{line}\033[0m")  # Red
+                elif 'warning' in line.lower():
+                    formatted.append(f"\033[93m{line}\033[0m")  # Yellow
+                elif line.strip().startswith('-->') or line.strip().startswith('|'):
+                    formatted.append(f"\033[90m{line}\033[0m")  # Gray
+                else:
+                    formatted.append(line)
+            if len(lines) > 15:
+                formatted.append(f"\033[90m... ({len(lines) - 15} more lines)\033[0m")
+            return '\n'.join(formatted)
+        
         # Interactive loop
         while True:
             try:
-                code = input(">> ")
+                code = get_input(">> ")
             except (EOFError, KeyboardInterrupt):
                 result.AppendMessage("\nExiting REPL...")
                 break
@@ -625,13 +662,20 @@ def _cmd_repl(
                     result.AppendMessage(f"  {name}: {type_name}")
                 continue
             
+            if code == ':help':
+                result.AppendMessage("Commands:")
+                result.AppendMessage("  :q, :quit, :exit  - Exit REPL")
+                result.AppendMessage("  :vars             - Show captured variables")
+                result.AppendMessage("  :help             - Show this help")
+                continue
+            
             # Evaluate Rust code
             try:
                 eval_result = session.eval(code)
                 if eval_result:
                     print(eval_result)
             except Exception as e:
-                print(f"Error: {e}")
+                print(format_error(str(e)))
         
         result.AppendMessage("REPL session ended.")
         

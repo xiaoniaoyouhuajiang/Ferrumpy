@@ -30,8 +30,8 @@ proc-macro2 = "1"
 toml = "0.8"
 prettyplease = "0.2"
 
-# REPL engine (embedded evcxr)
-evcxr = "0.21"
+# REPL engine (vendored evcxr for customization)
+evcxr = { path = "../vendor/evcxr/evcxr" }
 crossbeam-channel = "0.5"
 
 # Python bindings (optional)

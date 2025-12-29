@@ -28,9 +28,40 @@ TYPE_NORMALIZATION = [
     (r'^alloc::boxed::Box<(.+)>$', r'Box<\1>'),
     (r'^alloc::sync::Arc<(.+),\s*alloc::alloc::Global>$', r'Arc<\1>'),
     (r'^alloc::sync::Arc<(.+)>$', r'Arc<\1>'),
+    (r'^alloc::rc::Rc<(.+),\s*alloc::alloc::Global>$', r'Rc<\1>'),
     (r'^alloc::rc::Rc<(.+)>$', r'Rc<\1>'),
     (r'^&str$', '&str'),
+    # HashMap with RandomState
+    (r'^std::collections::hash::map::HashMap<(.+),\s*(.+),\s*std::hash::random::RandomState>$', r'HashMap<\1, \2>'),
+    (r'^std::collections::hash::map::HashMap<(.+)>$', r'HashMap<\1>'),
 ]
+
+# C/LLDB type to Rust type mapping
+C_TO_RUST_TYPES = {
+    # Signed integers
+    'int': 'i32',
+    'signed int': 'i32',
+    'long': 'i64',
+    'signed long': 'i64',
+    'long long': 'i64',
+    'signed long long': 'i64',
+    'short': 'i16',
+    'signed short': 'i16',
+    'signed char': 'i8',
+    # Unsigned integers
+    'unsigned int': 'u32',
+    'unsigned long': 'u64',
+    'unsigned long long': 'u64',
+    'unsigned short': 'u16',
+    'unsigned char': 'u8',
+    # Floating point
+    'float': 'f32',
+    'double': 'f64',
+    # Boolean
+    '_Bool': 'bool',
+    # Char (Rust char is 4 bytes, but LLDB shows as char)
+    'char': 'char',
+}
 
 # Primitive types that can be directly serialized
 # Includes both Rust names and C/LLDB names
@@ -53,10 +84,16 @@ PRIMITIVE_TYPES = {
 
 def normalize_type_name(lldb_type: str) -> str:
     """Convert LLDB type name to Rust source type name."""
+    # First, map C types to Rust types
+    if lldb_type in C_TO_RUST_TYPES:
+        return C_TO_RUST_TYPES[lldb_type]
+    
     # Try each normalization rule in order
     for pattern, replacement in TYPE_NORMALIZATION:
         if re.match(pattern, lldb_type):
-            return re.sub(pattern, replacement, lldb_type)
+            result = re.sub(pattern, replacement, lldb_type)
+            # Recursively normalize inner types
+            return _normalize_inner_types(result)
     
     # For user types, extract the last component
     # e.g., "my_crate::models::User" -> "User"
@@ -67,6 +104,15 @@ def normalize_type_name(lldb_type: str) -> str:
         return last
     
     return lldb_type
+
+
+def _normalize_inner_types(type_str: str) -> str:
+    """Recursively normalize types inside generics."""
+    # Replace C types in generic parameters
+    for c_type, rust_type in C_TO_RUST_TYPES.items():
+        # Match as whole word to avoid partial replacements
+        type_str = re.sub(rf'\b{re.escape(c_type)}\b', rust_type, type_str)
+    return type_str
 
 
 def is_primitive(type_name: str) -> bool:
