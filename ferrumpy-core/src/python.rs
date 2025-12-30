@@ -189,6 +189,32 @@ impl PyReplSession {
             .add_path_dep_silent(name, std::path::Path::new(path))
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
     }
+
+    /// Get code completions for the given source at the specified cursor position
+    ///
+    /// Args:
+    ///     src: The source code being completed
+    ///     position: Cursor position (byte offset) in the source
+    ///
+    /// Returns:
+    ///     Dict with keys: "completions" (list of strings), "start_offset", "end_offset"
+    fn completions(&mut self, py: Python<'_>, src: &str, position: usize) -> PyResult<PyObject> {
+        let session = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Session not initialized"))?;
+
+        match session.completions(src, position) {
+            Ok((completions, start_offset, end_offset)) => {
+                let result = PyDict::new_bound(py);
+                result.set_item("completions", completions)?;
+                result.set_item("start_offset", start_offset)?;
+                result.set_item("end_offset", end_offset)?;
+                Ok(result.into())
+            }
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e.to_string())),
+        }
+    }
 }
 
 /// Generate a companion lib crate from a user's project

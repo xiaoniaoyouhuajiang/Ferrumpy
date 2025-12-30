@@ -276,10 +276,25 @@ impl ReplSession {
         }
     }
 
-    /// Generate type-aware variable declaration code
+    /// Generate type-aware variable declaration code using let bindings
+    /// Note: Static variables don't persist across evcxr eval calls, so we use let bindings
+    /// Functions defined in REPL cannot access these variables - use closure captures instead
     fn generate_typed_var_code(
         &self,
         name: &str,
+        value: &serde_json::Value,
+        type_hint: &str,
+    ) -> Result<String> {
+        // Generate the value initialization expression
+        let init_expr = self.generate_value_init_expr(value, type_hint)?;
+
+        // Generate: let name: Type = init_expr;
+        Ok(format!("let {}: {} = {};", name, type_hint, init_expr))
+    }
+
+    /// Generate initialization expression for a value (for let bindings)
+    fn generate_value_init_expr(
+        &self,
         value: &serde_json::Value,
         type_hint: &str,
     ) -> Result<String> {
@@ -289,23 +304,23 @@ impl ReplSession {
             "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64"
             | "u128" | "usize" => {
                 if let Some(n) = value.as_i64() {
-                    return Ok(format!("let {}: {} = {};", name, type_hint, n));
+                    return Ok(format!("{}{}", n, self.type_suffix(type_hint)));
                 } else if let Some(n) = value.as_u64() {
-                    return Ok(format!("let {}: {} = {};", name, type_hint, n));
+                    return Ok(format!("{}{}", n, self.type_suffix(type_hint)));
                 }
             }
 
             // Float types
             "f32" | "f64" => {
                 if let Some(f) = value.as_f64() {
-                    return Ok(format!("let {}: {} = {:.15};", name, type_hint, f));
+                    return Ok(format!("{:.15}{}", f, self.type_suffix(type_hint)));
                 }
             }
 
             // Boolean
             "bool" => {
                 if let Some(b) = value.as_bool() {
-                    return Ok(format!("let {}: bool = {};", name, b));
+                    return Ok(b.to_string());
                 }
             }
 
@@ -313,10 +328,7 @@ impl ReplSession {
             "String" => {
                 if let Some(s) = value.as_str() {
                     let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
-                    return Ok(format!(
-                        "let {}: String = \"{}\".to_string();",
-                        name, escaped
-                    ));
+                    return Ok(format!("\"{}\".to_string()", escaped));
                 }
             }
 
@@ -326,7 +338,7 @@ impl ReplSession {
                     // Extract inner type
                     let inner_type = &t[4..t.len() - 1];
                     let elements = self.generate_vec_elements(arr, inner_type)?;
-                    return Ok(format!("let {}: {} = vec![{}];", name, t, elements));
+                    return Ok(format!("vec![{}]", elements));
                 }
             }
 
@@ -334,10 +346,10 @@ impl ReplSession {
             t if t.starts_with("Option<") => {
                 let inner_type = &t[7..t.len() - 1];
                 if value.is_null() {
-                    return Ok(format!("let {}: {} = None;", name, t));
+                    return Ok("None".to_string());
                 } else {
                     let inner_code = self.generate_value_expr(value, inner_type)?;
-                    return Ok(format!("let {}: {} = Some({});", name, t, inner_code));
+                    return Ok(format!("Some({})", inner_code));
                 }
             }
 
@@ -349,14 +361,35 @@ impl ReplSession {
         // Use type annotation for proper deserialization
         if type_hint != "serde_json::Value" && type_hint != "?" {
             Ok(format!(
-                "let {}: {} = serde_json::from_str(r#\"{}\"#).unwrap();",
-                name, type_hint, json_str
+                "serde_json::from_str::<{}>(r#\"{}\"#).unwrap()",
+                type_hint, json_str
             ))
         } else {
             Ok(format!(
-                "let {} = serde_json::from_str::<serde_json::Value>(r#\"{}\"#).unwrap();",
-                name, json_str
+                "serde_json::from_str::<serde_json::Value>(r#\"{}\"#).unwrap()",
+                json_str
             ))
+        }
+    }
+
+    /// Get type suffix for numeric literals (e.g., i32 -> "i32", f64 -> "f64")
+    fn type_suffix(&self, type_hint: &str) -> &'static str {
+        match type_hint {
+            "i8" => "i8",
+            "i16" => "i16",
+            "i32" => "i32",
+            "i64" => "i64",
+            "i128" => "i128",
+            "isize" => "isize",
+            "u8" => "u8",
+            "u16" => "u16",
+            "u32" => "u32",
+            "u64" => "u64",
+            "u128" => "u128",
+            "usize" => "usize",
+            "f32" => "f32",
+            "f64" => "f64",
+            _ => "",
         }
     }
 
@@ -626,6 +659,30 @@ impl ReplSession {
         // Note: evcxr doesn't expose defined variables directly
         // We would need to track them ourselves
         Vec::new()
+    }
+
+    /// Get completions for the given source code at the specified position
+    ///
+    /// Returns a tuple of (completions, start_offset, end_offset) where:
+    /// - completions: list of completion strings
+    /// - start_offset: byte offset where the replacement should start
+    /// - end_offset: byte offset where the replacement should end
+    pub fn completions(
+        &mut self,
+        src: &str,
+        position: usize,
+    ) -> Result<(Vec<String>, usize, usize)> {
+        match self.context.completions(src, position) {
+            Ok(completions) => {
+                let codes: Vec<String> = completions
+                    .completions
+                    .into_iter()
+                    .map(|c| c.code)
+                    .collect();
+                Ok((codes, completions.start_offset, completions.end_offset))
+            }
+            Err(e) => Err(anyhow::anyhow!("Completion error: {:?}", e)),
+        }
     }
 }
 

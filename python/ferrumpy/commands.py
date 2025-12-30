@@ -565,9 +565,12 @@ def _cmd_repl(
     """Start an interactive REPL with captured variables."""
     from .repl import EmbeddedReplSession
     from .serializer import serialize_frame
+    from . import repl_ui
     
     # Check for --test flag (non-interactive mode for testing)
     test_mode = "--test" in args
+    # Check for --simple flag (force simple mode without prompt_toolkit)
+    simple_mode = "--simple" in args
     
     result.AppendMessage("Starting FerrumPy Embedded REPL...")
     result.AppendMessage("Capturing variables from current frame...")
@@ -591,58 +594,53 @@ def _cmd_repl(
         init_result = session.initialize()
         result.AppendMessage(f"REPL ready. {init_result}")
         
-        result.AppendMessage("\n" + "=" * 50)
-        result.AppendMessage("FerrumPy REPL - Type Rust expressions")
-        result.AppendMessage("Commands: :q (quit), :vars (show variables)")
-        result.AppendMessage("=" * 50 + "\n")
-        
         # In test mode, exit immediately after initialization
         if test_mode:
+            result.AppendMessage("\n" + "=" * 50)
+            result.AppendMessage("FerrumPy REPL - Type Rust expressions")
+            result.AppendMessage("Commands: :q (quit), :vars (show variables)")
+            result.AppendMessage("=" * 50 + "\n")
             result.AppendMessage("Test mode: REPL initialized successfully, exiting.")
             result.AppendMessage("REPL session ended.")
             return
         
-        # Try to use prompt_toolkit for better UX, fallback to input()
-        # Only use prompt_toolkit if running in a real TTY (not in expect/script)
-        import sys
-        use_prompt_toolkit = False
-        if sys.stdin.isatty() and sys.stdout.isatty():
-            try:
-                from prompt_toolkit import prompt as pt_prompt
-                from prompt_toolkit.history import InMemoryHistory
-                history = InMemoryHistory()
-                use_prompt_toolkit = True
-            except ImportError:
-                pass
+        # Try enhanced mode with prompt_toolkit
+        if not simple_mode and repl_ui.is_prompt_toolkit_available():
+            # Use enhanced REPL
+            def eval_callback(code: str) -> str:
+                return session.eval(code)
+            
+            def output_callback(msg: str):
+                print(msg)
+            
+            def error_callback(msg: str):
+                print(_format_error(msg))
+            
+            success = repl_ui.run_enhanced_repl(
+                session=session._session,  # Get underlying PyReplSession
+                snapshot_data=data,
+                eval_callback=eval_callback,
+                output_callback=output_callback,
+                error_callback=error_callback,
+            )
+            
+            if success:
+                result.AppendMessage("REPL session ended.")
+                return
+            # Fall through to simple mode if enhanced mode failed
         
-        def get_input(prompt_str: str) -> str:
-            """Get user input with optional prompt_toolkit support."""
-            if use_prompt_toolkit:
-                return pt_prompt(prompt_str, history=history)
-            print(prompt_str, end='', flush=True)
-            return input()
+        # Simple mode (fallback)
+        result.AppendMessage("\n" + "=" * 50)
+        result.AppendMessage("FerrumPy REPL - Simple Mode")
+        result.AppendMessage("Commands: :q (quit), :vars (show variables)")
+        result.AppendMessage("Tip: Install prompt_toolkit for enhanced features")
+        result.AppendMessage("=" * 50 + "\n")
         
-        def format_error(error_msg: str) -> str:
-            """Format error message for better readability."""
-            lines = str(error_msg).split('\n')
-            formatted = []
-            for line in lines[:15]:  # Limit to first 15 lines
-                if 'error' in line.lower():
-                    formatted.append(f"\033[91m{line}\033[0m")  # Red
-                elif 'warning' in line.lower():
-                    formatted.append(f"\033[93m{line}\033[0m")  # Yellow
-                elif line.strip().startswith('-->') or line.strip().startswith('|'):
-                    formatted.append(f"\033[90m{line}\033[0m")  # Gray
-                else:
-                    formatted.append(line)
-            if len(lines) > 15:
-                formatted.append(f"\033[90m... ({len(lines) - 15} more lines)\033[0m")
-            return '\n'.join(formatted)
-        
-        # Interactive loop
+        # Simple interactive loop
         while True:
             try:
-                code = get_input(">> ")
+                print(">> ", end='', flush=True)
+                code = input()
             except (EOFError, KeyboardInterrupt):
                 result.AppendMessage("\nExiting REPL...")
                 break
@@ -675,12 +673,30 @@ def _cmd_repl(
                 if eval_result:
                     print(eval_result)
             except Exception as e:
-                print(format_error(str(e)))
+                print(_format_error(str(e)))
         
         result.AppendMessage("REPL session ended.")
         
     except Exception as e:
         result.SetError(f"Failed to create REPL: {e}")
+
+
+def _format_error(error_msg: str) -> str:
+    """Format error message for better readability."""
+    lines = str(error_msg).split('\n')
+    formatted = []
+    for line in lines[:15]:  # Limit to first 15 lines
+        if 'error' in line.lower():
+            formatted.append(f"\033[91m{line}\033[0m")  # Red
+        elif 'warning' in line.lower():
+            formatted.append(f"\033[93m{line}\033[0m")  # Yellow
+        elif line.strip().startswith('-->') or line.strip().startswith('|'):
+            formatted.append(f"\033[90m{line}\033[0m")  # Gray
+        else:
+            formatted.append(line)
+    if len(lines) > 15:
+        formatted.append(f"\033[90m... ({len(lines) - 15} more lines)\033[0m")
+    return '\n'.join(formatted)
 
 
 

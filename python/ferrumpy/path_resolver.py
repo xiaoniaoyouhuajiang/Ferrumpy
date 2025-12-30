@@ -19,7 +19,7 @@ except ImportError:
     lldb = None
 
 import re
-from typing import List, Union
+from typing import List, Union, Optional
 from dataclasses import dataclass
 
 
@@ -332,4 +332,3 @@ def _navigate_path(value: lldb.SBValue, path: list) -> Optional[lldb.SBValue]:
             return None
         current = child
     return current
-
