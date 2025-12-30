@@ -24,9 +24,18 @@ if [ ! -f "$RUST_SAMPLE_DIR/target/debug/rust_sample" ]; then
     echo
 fi
 
-# ============================================
-# Python Unit Tests
-# ============================================
+# Set up REPL worker path for tests
+# In development, the worker binary is in target/release
+# This ensures tests can find it regardless of working directory
+WORKER_BINARY="$PROJECT_ROOT/target/release/ferrumpy-repl-worker"
+if [ -f "$WORKER_BINARY" ]; then
+    export FERRUMPY_REPL_WORKER="$WORKER_BINARY"
+    echo "Using REPL worker: $FERRUMPY_REPL_WORKER"
+else
+    echo "Warning: REPL worker not found at $WORKER_BINARY"
+    echo "Run 'cargo build --release -p ferrumpy-repl-worker' to build it"
+fi
+echo
 run_python_tests() {
     echo "--- Python Unit Tests (No LLDB) ---"
     echo
@@ -71,6 +80,11 @@ PYTHON_SCRIPT
     echo "--- Type Normalization Tests ---"
     echo
     python3 "$PROJECT_ROOT/tests/test_type_normalization.py"
+    
+    echo
+    echo "--- Completion API Tests ---"
+    echo
+    python3 "$PROJECT_ROOT/tests/test_completions.py"
 
     return $?
 }

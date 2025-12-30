@@ -58,10 +58,18 @@ impl ReplSession {
 
     /// Find the ferrumpy-repl-worker binary
     fn find_worker_binary() -> Result<String> {
-        // Try several locations in order:
-        // 1. Same directory as this .so module (pip install location)
-        // 2. PATH
-        // 3. Cargo target directory (for development)
+        // Try locations in order of priority:
+        // 1. Environment variable (for manual override/testing)
+        // 2. Same directory as this .so module (pip install location)
+        // 3. PATH (system-wide installation)
+        // 4. Current directory's target/ (development only, no recursion)
+
+        // 1. Check environment variable
+        if let Ok(path) = std::env::var("FERRUMPY_REPL_WORKER") {
+            if std::path::Path::new(&path).exists() {
+                return Ok(std::fs::canonicalize(path)?.to_string_lossy().to_string());
+            }
+        }
 
         let worker_name = if cfg!(windows) {
             "ferrumpy-repl-worker.exe"
@@ -69,43 +77,39 @@ impl ReplSession {
             "ferrumpy-repl-worker"
         };
 
-        // Check same directory as this module (where pip installs it)
-        // The binary and .so will be in the same directory: site-packages/ferrumpy/
+        // 2. Check same directory as this module (distribution)
         if let Some(module_dir) = Self::get_module_directory() {
             let worker = module_dir.join(worker_name);
             if worker.exists() {
-                return Ok(worker.to_string_lossy().to_string());
+                return Ok(std::fs::canonicalize(worker)?.to_string_lossy().to_string());
             }
         }
 
-        // Check PATH
+        // 3. Check PATH
         if let Some(path) = Self::find_in_path(worker_name) {
             return Ok(path);
         }
 
-        // Development fallback: check cargo target directory
-        // Try absolute path first
-        let project_root = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-
-        for profile in ["debug", "release"] {
-            // Check workspace target directory
-            let worker = format!("{}/target/{}/{}", project_root, profile, worker_name);
-            if std::path::Path::new(&worker).exists() {
-                return Ok(worker);
-            }
-
-            // Check current working directory target
-            let worker = format!("target/{}/{}", profile, worker_name);
-            if std::path::Path::new(&worker).exists() {
-                return Ok(std::fs::canonicalize(&worker)?
-                    .to_string_lossy()
-                    .to_string());
+        // 4. Development fallback: check current directory's target/ only
+        if let Ok(cwd) = std::env::current_dir() {
+            // Prefer release, then debug
+            for profile in ["release", "debug"] {
+                let worker = cwd.join("target").join(profile).join(worker_name);
+                if worker.exists() {
+                    return Ok(std::fs::canonicalize(worker)?.to_string_lossy().to_string());
+                }
             }
         }
 
         Err(anyhow::anyhow!(
             "Could not find ferrumpy-repl-worker binary. \
-             Expected in: site-packages/ferrumpy/ or target/debug/"
+             Expected locations:\n\
+             - FERRUMPY_REPL_WORKER environment variable\n\
+             - Same directory as ferrumpy module (site-packages/ferrumpy/)\n\
+             - System PATH\n\
+             - ./target/{{release,debug}}/ (development)\n\
+             \n\
+             Hint: Set FERRUMPY_REPL_WORKER=/path/to/ferrumpy-repl-worker for manual override."
         ))
     }
 
@@ -671,18 +675,20 @@ impl ReplSession {
         &mut self,
         src: &str,
         position: usize,
-    ) -> Result<(Vec<String>, usize, usize)> {
+    ) -> Result<(Vec<evcxr::Completion>, usize, usize)> {
         match self.context.completions(src, position) {
-            Ok(completions) => {
-                let codes: Vec<String> = completions
-                    .completions
-                    .into_iter()
-                    .map(|c| c.code)
-                    .collect();
-                Ok((codes, completions.start_offset, completions.end_offset))
-            }
+            Ok(completions) => Ok((
+                completions.completions,
+                completions.start_offset,
+                completions.end_offset,
+            )),
             Err(e) => Err(anyhow::anyhow!("Completion error: {:?}", e)),
         }
+    }
+
+    /// Check if a code fragment is complete, incomplete, or invalid
+    pub fn fragment_validity(&self, source: &str) -> crate::repl::scan::FragmentValidity {
+        crate::repl::scan::validate_source_fragment(source)
     }
 }
 
@@ -701,6 +707,19 @@ mod tests {
             Err(e) => {
                 eprintln!("Skipping test (evcxr unavailable): {}", e);
             }
+        }
+    }
+
+    #[test]
+    fn test_completions_api_structure() {
+        match ReplSession::new() {
+            Ok(mut session) => {
+                // We don't necessarily need a full compilation for a basic check
+                let result = session.completions("let x = ", 8);
+                // Even if empty, it should be an Ok result with the right structure
+                assert!(result.is_ok());
+            }
+            Err(_) => {}
         }
     }
 }

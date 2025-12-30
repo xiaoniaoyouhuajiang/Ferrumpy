@@ -117,15 +117,38 @@ class RustCompleter(Completer):
                 result = self.session.completions(document.text, document.cursor_position)
                 if result:
                     completions = result.get("completions", [])
-                    start_offset = result.get("start_offset", 0)
-                    end_offset = result.get("end_offset", document.cursor_position)
+                    start_offset = result.get("start_offset")
                     
-                    # Calculate replacement position
-                    start_position = -(document.cursor_position - start_offset)
-                    
-                    for code in completions:
-                        yield Completion(code, start_position=start_position)
-                    return
+                    if completions:
+                        # Calculate replacement position for prompt_toolkit (relative to cursor)
+                        if start_offset is not None and start_offset <= document.cursor_position:
+                            start_position = start_offset - document.cursor_position
+                        else:
+                            start_position = -len(document.get_word_before_cursor())
+                        
+                        for item in completions:
+                            # 'item' is now a dict with 'code', 'label', 'kind', 'detail'
+                            code = item["code"]
+                            label = item.get("label", code)
+                            kind = item.get("kind", "")
+                            detail = item.get("detail", "")
+                            
+                            # Format metadata (shown on the right)
+                            display_meta = ""
+                            if kind and detail:
+                                display_meta = f"{kind}: {detail}"
+                            elif kind:
+                                display_meta = kind
+                            elif detail:
+                                display_meta = detail
+                                
+                            yield Completion(
+                                code, 
+                                start_position=start_position,
+                                display=label,
+                                display_meta=display_meta
+                            )
+                        return
             except Exception:
                 pass  # Fall back to simple completion
         
@@ -155,19 +178,42 @@ class RustValidator(Validator):
     Allows double-newline to force submission (escape hatch).
     """
     
+    def __init__(self, session=None):
+        self.session = session
+
     def validate(self, document: 'Document'):
         """Validate the document, raising ValidationError if incomplete."""
-        text = document.text.strip()
+        text = document.text
         
         # Empty is valid
-        if not text:
+        if not text.strip():
             return
         
         # Double newline forces submit (escape hatch, like evcxr_repl)
-        if document.text.endswith('\n\n'):
+        if text.endswith('\n\n'):
             return
         
-        # Check brace balance
+        # Use Rust-side lexical scanner for accurate validation
+        if self.session is not None:
+            try:
+                validity = self.session.fragment_validity(text)
+                if validity == "Incomplete":
+                    raise ValidationError(
+                        message="Incomplete input: waiting for more code (or double Enter to force)",
+                        cursor_position=len(text)
+                    )
+                elif validity == "Invalid":
+                    # We don't necessarily block invalid code (the REPL execution will show error)
+                    # but we can provide feedback here if we wanted to.
+                    pass
+            except Exception:
+                # Fallback to simple brace counting if Rust call fails
+                self._fallback_validate(text)
+        else:
+            self._fallback_validate(text)
+
+    def _fallback_validate(self, text):
+        # Check brace balance (simplified fallback)
         opens = text.count('{') + text.count('(') + text.count('[')
         closes = text.count('}') + text.count(')') + text.count(']')
         
@@ -229,7 +275,7 @@ def create_enhanced_repl(
     completer = RustCompleter(session=session, snapshot_vars=var_names)
     
     # Validator for multi-line
-    validator = RustValidator()
+    validator = RustValidator(session=session)
     
     # Key bindings
     bindings = KeyBindings()

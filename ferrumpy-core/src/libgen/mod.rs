@@ -123,7 +123,7 @@ fn generate_cargo_toml(project_path: &Path, add_serde: bool) -> Result<String> {
                     toml::Value::String(version) => {
                         cargo.push_str(&format!("{} = \"{}\"\n", name, version));
                     }
-                    toml::Value::Table(t) => {
+                    toml::Value::Table(_t) => {
                         // Handle complex dependencies
                         let dep_str = toml::to_string(value)?;
                         cargo.push_str(&format!("{} = {}\n", name, dep_str.trim()));

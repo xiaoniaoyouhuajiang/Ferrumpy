@@ -637,39 +637,62 @@ def _cmd_repl(
         result.AppendMessage("=" * 50 + "\n")
         
         # Simple interactive loop
+        buffer = []
+        prev_line_empty = False
         while True:
             try:
-                print(">> ", end='', flush=True)
-                code = input()
+                # Show continuation prompt if buffer not empty
+                prompt = ".. " if buffer else ">> "
+                print(prompt, end='', flush=True)
+                line = input()
             except (EOFError, KeyboardInterrupt):
                 result.AppendMessage("\nExiting REPL...")
                 break
             
-            code = code.strip()
-            if not code:
-                continue
-            
-            # Special commands
-            if code in (':q', ':quit', ':exit'):
+            # Special case: handle single line commands even in buffer
+            stripped_line = line.strip()
+            if not buffer and stripped_line in (':q', ':quit', ':exit'):
                 result.AppendMessage("Exiting REPL...")
                 break
-            
-            if code == ':vars':
+            if not buffer and stripped_line == ':vars':
                 result.AppendMessage("Variables:")
                 for name, type_name in data.get('types', {}).items():
                     result.AppendMessage(f"  {name}: {type_name}")
                 continue
-            
-            if code == ':help':
+            if not buffer and stripped_line == ':help':
                 result.AppendMessage("Commands:")
                 result.AppendMessage("  :q, :quit, :exit  - Exit REPL")
                 result.AppendMessage("  :vars             - Show captured variables")
                 result.AppendMessage("  :help             - Show this help")
                 continue
+
+            buffer.append(line)
+            full_code = "\n".join(buffer)
             
+            # Check if code is complete
+            try:
+                # Force submit on consecutive empty lines
+                current_line_empty = line == ""
+                if current_line_empty and prev_line_empty and len(buffer) > 1:
+                    validity = "Valid"  # Force submit
+                else:
+                    validity = session._session.fragment_validity(full_code)
+                prev_line_empty = current_line_empty
+            except Exception:
+                validity = "Valid"  # Fallback
+
+            if validity == "Incomplete":
+                continue
+            
+            # Reset buffer and state for next command
+            buffer = []
+            prev_line_empty = False
+            if not full_code.strip():
+                continue
+
             # Evaluate Rust code
             try:
-                eval_result = session.eval(code)
+                eval_result = session.eval(full_code)
                 if eval_result:
                     print(eval_result)
             except Exception as e:

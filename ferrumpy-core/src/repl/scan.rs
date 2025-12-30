@@ -23,6 +23,7 @@ impl FragmentValidity {
     }
 }
 
+#[allow(dead_code)]
 pub fn validate_source_fragment(source: &str) -> FragmentValidity {
     let mut stack: Vec<Bracket> = vec![];
     let mut attr_end_stack_depth: Option<usize> = None;
@@ -114,6 +115,7 @@ enum StrKind {
     RawStr { hashes: usize },
 }
 
+#[allow(dead_code)]
 fn check_raw_str(s: &str, quote_idx: usize) -> Option<StrKind> {
     let sb = s.as_bytes();
     let index_back = |offset: usize| {
@@ -139,6 +141,7 @@ fn check_raw_str(s: &str, quote_idx: usize) -> Option<StrKind> {
     }
 }
 
+#[allow(dead_code)]
 fn eat_string(iter: &mut Peekable<CharIndices<'_>>, kind: StrKind) -> bool {
     let (hashes, escapes) = match kind {
         StrKind::Normal => (0, true),
@@ -169,6 +172,7 @@ fn eat_string(iter: &mut Peekable<CharIndices<'_>>, kind: StrKind) -> bool {
     false
 }
 
+#[allow(dead_code)]
 fn eat_comment_line(iter: &mut Peekable<CharIndices<'_>>) {
     for (_, c) in iter {
         if c == '\n' {
@@ -177,6 +181,7 @@ fn eat_comment_line(iter: &mut Peekable<CharIndices<'_>>) {
     }
 }
 
+#[allow(dead_code)]
 fn eat_comment_block(iter: &mut Peekable<CharIndices<'_>>) -> bool {
     let mut depth = 1;
     while depth != 0 {
@@ -203,6 +208,7 @@ enum EatCharRes {
     SawInvalid,
 }
 
+#[allow(dead_code)]
 fn eat_char(input: &mut Peekable<CharIndices<'_>>) -> Option<EatCharRes> {
     let mut scratch = input.clone();
     let res = do_eat_char(&mut scratch);
@@ -212,6 +218,7 @@ fn eat_char(input: &mut Peekable<CharIndices<'_>>) -> Option<EatCharRes> {
     res
 }
 
+#[allow(dead_code)]
 fn do_eat_char(input: &mut Peekable<CharIndices<'_>>) -> Option<EatCharRes> {
     let (_, next_c) = input.next()?;
     if next_c == '\n' || next_c == '\r' || next_c == '\t' {
@@ -242,5 +249,126 @@ fn do_eat_char(input: &mut Peekable<CharIndices<'_>>) -> Option<EatCharRes> {
         } else {
             Some(EatCharRes::SawInvalid)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_balanced_fragments() {
+        assert_eq!(
+            validate_source_fragment("let x = 42;"),
+            FragmentValidity::Valid
+        );
+        assert_eq!(
+            validate_source_fragment("{ let x = 42; }"),
+            FragmentValidity::Valid
+        );
+        assert_eq!(
+            validate_source_fragment("fn foo() { }"),
+            FragmentValidity::Valid
+        );
+    }
+
+    #[test]
+    fn test_incomplete_fragments() {
+        assert_eq!(
+            validate_source_fragment("let x = {"),
+            FragmentValidity::Incomplete
+        );
+        assert_eq!(
+            validate_source_fragment("fn foo("),
+            FragmentValidity::Incomplete
+        );
+        assert_eq!(
+            validate_source_fragment("let x = [1, 2,"),
+            FragmentValidity::Incomplete
+        );
+    }
+
+    #[test]
+    fn test_invalid_fragments() {
+        assert_eq!(
+            validate_source_fragment("let x = }"),
+            FragmentValidity::Invalid
+        );
+        assert_eq!(
+            validate_source_fragment("let x = [1, 2)"),
+            FragmentValidity::Invalid
+        );
+    }
+
+    #[test]
+    fn test_comments() {
+        assert_eq!(
+            validate_source_fragment("let x = 42; // comment"),
+            FragmentValidity::Valid
+        );
+        assert_eq!(
+            validate_source_fragment("let x = 42; /* comment */"),
+            FragmentValidity::Valid
+        );
+        assert_eq!(
+            validate_source_fragment("let x = 42; /* incomplete comment"),
+            FragmentValidity::Incomplete
+        );
+        assert_eq!(
+            validate_source_fragment("let x = 42; /* nested /* comment */ */"),
+            FragmentValidity::Valid
+        );
+    }
+
+    #[test]
+    fn test_strings() {
+        assert_eq!(
+            validate_source_fragment("let s = \"hello\";"),
+            FragmentValidity::Valid
+        );
+        assert_eq!(
+            validate_source_fragment("let s = \"incomplete"),
+            FragmentValidity::Incomplete
+        );
+        assert_eq!(
+            validate_source_fragment("let s = r#\"raw string\"#;"),
+            FragmentValidity::Valid
+        );
+        assert_eq!(
+            validate_source_fragment("let s = r##\"nested \" hashes\"##;"),
+            FragmentValidity::Valid
+        );
+        assert_eq!(
+            validate_source_fragment("let s = r#\"incomplete raw"),
+            FragmentValidity::Incomplete
+        );
+    }
+
+    #[test]
+    fn test_character_literals() {
+        assert_eq!(
+            validate_source_fragment("let c = 'a';"),
+            FragmentValidity::Valid
+        );
+        assert_eq!(
+            validate_source_fragment("let c = '\\n';"),
+            FragmentValidity::Valid
+        );
+        assert_eq!(
+            validate_source_fragment("let c = '"),
+            FragmentValidity::Incomplete
+        );
+    }
+
+    #[test]
+    fn test_attributes() {
+        assert_eq!(
+            validate_source_fragment("#[derive(Debug)]"),
+            FragmentValidity::Incomplete
+        );
+        assert_eq!(
+            validate_source_fragment("#[derive(Debug)] struct Foo;"),
+            FragmentValidity::Valid
+        );
     }
 }

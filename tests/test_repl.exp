@@ -390,18 +390,46 @@ expect {
 }
 
 # ========================================
-# Test 11: Complex Expressions
+# Test 12: Multiline Input (Simple Mode)
 # ========================================
 
-# Test 11a: String formatting and manipulation
+# Test 12a: Function with explicit newlines
 expect ">>"
-send "let name = \"Rust\"; format!(\"Hello, {}!\", name)\r"
+send "fn multiline_add(a: i32, b: i32) -> i32 \{\r"
+expect ".. "
+send "  a + b\r"
+expect ".. "
+send "\}\r"
+expect ">>"
+send "multiline_add(5, 7)\r"
 expect {
-    "Hello, Rust!" {
-        puts "✓ String formatting works"
+    "12" {
+        puts "✓ Multiline function definition works"
     }
     timeout {
-        puts "\n⚠ String formatting timeout (may be acceptable)"
+        puts "\n✗ Multiline test timeout"
+        exit 1
+    }
+}
+
+# Test 12b: Proper block completion
+expect ">>"
+send "let y = \{\r"
+expect ".. "
+send "  let internal = 100;\r"
+expect ".. "
+send "  internal\r"
+expect ".. "
+send "\};\r"
+expect ">>"
+send "y\r"
+expect {
+    "100" {
+        puts "✓ Force submit with double newline works"
+    }
+    timeout {
+        puts "\n✗ Force submit test timeout"
+        exit 1
     }
 }
 

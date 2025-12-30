@@ -207,13 +207,50 @@ impl PyReplSession {
         match session.completions(src, position) {
             Ok((completions, start_offset, end_offset)) => {
                 let result = PyDict::new_bound(py);
-                result.set_item("completions", completions)?;
+                let list = pyo3::types::PyList::empty_bound(py);
+                for c in completions {
+                    let dict = PyDict::new_bound(py);
+                    dict.set_item("code", c.code)?;
+                    dict.set_item("label", c.label)?;
+
+                    // Normalize kind: strip "SymbolKind(...)" wrapper to extract semantic name
+                    // Example: "SymbolKind(Local)" -> "Local", "Field" -> "Field"
+                    let normalized_kind = c
+                        .kind
+                        .strip_prefix("SymbolKind(")
+                        .and_then(|s| s.strip_suffix(')'))
+                        .map(|inner| {
+                            // Map common rust-analyzer kinds to user-friendly names
+                            match inner {
+                                "Local" => "Variable",
+                                "Const" => "Constant",
+                                other => other,
+                            }
+                        })
+                        .unwrap_or(c.kind.as_str());
+
+                    dict.set_item("kind", normalized_kind)?;
+                    dict.set_item("detail", c.detail)?;
+                    list.append(dict)?;
+                }
+                result.set_item("completions", list)?;
                 result.set_item("start_offset", start_offset)?;
                 result.set_item("end_offset", end_offset)?;
                 Ok(result.into())
             }
             Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e.to_string())),
         }
+    }
+
+    /// Check if a code fragment is complete, incomplete, or invalid
+    fn fragment_validity(&mut self, src: &str) -> PyResult<String> {
+        let session = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Session not initialized"))?;
+
+        let res = session.fragment_validity(src);
+        Ok(format!("{:?}", res))
     }
 }
 
@@ -226,6 +263,7 @@ impl PyReplSession {
 /// Returns:
 ///     Tuple of (lib_path, crate_name)
 #[pyfunction]
+#[pyo3(signature = (project_path, output_dir=None))]
 fn generate_lib(project_path: &str, output_dir: Option<&str>) -> PyResult<(String, String)> {
     use crate::libgen::{generate_lib as rust_generate_lib, LibGenConfig};
 

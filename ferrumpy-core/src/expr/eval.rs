@@ -498,7 +498,7 @@ mod tests {
 
     #[test]
     fn test_type_mismatch() {
-        let eval = Evaluator::new();
+        let _eval = Evaluator::new();
 
         // This actually parses as two i32 literals, so types match
         // We need to test with variables of different types
