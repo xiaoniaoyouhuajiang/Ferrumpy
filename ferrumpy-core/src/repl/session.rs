@@ -15,6 +15,9 @@ pub struct ReplSession {
     stderr: Receiver<String>,
     project_path: Option<String>,
     initialized: bool,
+    // Snapshot data for preservation across interrupts
+    snapshot_json: Option<String>,
+    snapshot_type_hints: Option<String>,
 }
 
 impl ReplSession {
@@ -43,6 +46,8 @@ impl ReplSession {
             stderr: outputs.stderr,
             project_path: None,
             initialized: false,
+            snapshot_json: None,
+            snapshot_type_hints: None,
         };
 
         // Enable dependency caching (512MB) for faster subsequent starts
@@ -190,9 +195,15 @@ impl ReplSession {
 
     /// Load variables from serialized JSON snapshot using optimized single-compilation mode
     /// with TYPE-AWARE code generation for real Rust types
-    pub fn load_snapshot(&mut self, json_data: &str, _type_hints: &str) -> Result<String> {
-        // OPTIMIZED: Use add_dep_silent to register deps without triggering compilation.
-        // All deps are batched, then compiled once with the final code.
+    pub fn load_snapshot(&mut self, json_data: &str, type_hints: &str) -> Result<String> {
+        // Save snapshot data for potential restoration after interrupt
+        self.snapshot_json = Some(json_data.to_string());
+        self.snapshot_type_hints = Some(type_hints.to_string());
+        eprintln!(
+            "[DEBUG] Saved snapshot: {} bytes JSON, {} bytes hints",
+            json_data.len(),
+            type_hints.len()
+        );
 
         // Step 1: Register dependencies silently (no compilation yet)
         self.context
@@ -202,9 +213,23 @@ impl ReplSession {
             .add_dep_silent("serde_json", r#""1""#)
             .map_err(|e| anyhow::anyhow!("Failed to add serde_json dep: {:?}", e))?;
 
-        // Step 2: Parse the JSON snapshot
+        // Step 2: Parse the JSON snapshot to extract companion lib path
         let snapshot: serde_json::Value =
             serde_json::from_str(json_data).context("Failed to parse snapshot JSON")?;
+
+        // Re-add companion library if it exists in the snapshot
+        if let Some(lib_path) = snapshot.get("lib_path").and_then(|v| v.as_str()) {
+            let lib_name = snapshot
+                .get("lib_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("ferrumpy_snapshot");
+
+            eprintln!(
+                "[DEBUG] Re-adding companion library: {} at {}",
+                lib_name, lib_path
+            );
+            self.add_path_dep_silent(lib_name, Path::new(lib_path))?;
+        }
 
         // Get types map for type-aware code generation
         let types_map = snapshot.get("types").and_then(|v| v.as_object());
@@ -689,6 +714,81 @@ impl ReplSession {
     /// Check if a code fragment is complete, incomplete, or invalid
     pub fn fragment_validity(&self, source: &str) -> crate::repl::scan::FragmentValidity {
         crate::repl::scan::validate_source_fragment(source)
+    }
+
+    /// Interrupt any currently running evaluation by restarting the subprocess
+    ///
+    /// This is a forceful interruption that kills the subprocess and starts a new one.
+    /// User-defined variables and functions will be lost, but LLDB snapshot variables
+    /// are automatically restored.
+    ///
+    /// Returns Ok(()) if the interrupt was successful.
+    pub fn interrupt(&mut self) -> Result<()> {
+        eprintln!("[DEBUG] Interrupt called");
+
+        // Execute :clear command which forces a subprocess restart
+        // This effectively kills any running compilation or execution
+        self.context
+            .execute(":clear")
+            .map_err(|e| anyhow::anyhow!("Failed to interrupt: {:?}", e))?;
+        eprintln!("[DEBUG] :clear executed");
+
+        // Restore snapshot if it was previously loaded
+        if let (Some(json), Some(hints)) = (&self.snapshot_json, &self.snapshot_type_hints) {
+            eprintln!(
+                "[DEBUG] Found snapshot to restore: {} bytes JSON",
+                json.len()
+            );
+            // Clone the data before calling load_snapshot (which needs &mut self)
+            let json_clone = json.clone();
+            let hints_clone = hints.clone();
+
+            // Re-initialize the session state
+            self.initialized = false;
+
+            // Reload the snapshot to restore LLDB variables
+            self.load_snapshot(&json_clone, &hints_clone).map_err(|e| {
+                eprintln!("[DEBUG] Snapshot restoration failed: {:?}", e);
+                anyhow::anyhow!("Failed to restore snapshot after interrupt: {:?}", e)
+            })?;
+            eprintln!("[DEBUG] Snapshot restored successfully");
+        } else {
+            eprintln!(
+                "[DEBUG] No snapshot to restore (snapshot_json: {}, snapshot_type_hints: {})",
+                self.snapshot_json.is_some(),
+                self.snapshot_type_hints.is_some()
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Drain all pending stdout lines from the subprocess
+    ///
+    /// This prevents the stdout pipe from filling up and blocking the subprocess.
+    /// Should be called periodically, especially after eval() operations.
+    ///
+    /// Returns a vector of output lines.
+    pub fn drain_stdout(&mut self) -> Vec<String> {
+        let mut output = Vec::new();
+        while let Ok(line) = self.stdout.try_recv() {
+            output.push(line);
+        }
+        output
+    }
+
+    /// Drain all pending stderr lines from the subprocess
+    ///
+    /// This prevents the stderr pipe from filling up and blocking the subprocess.
+    /// Should be called periodically, especially after eval() operations.
+    ///
+    /// Returns a vector of error lines.
+    pub fn drain_stderr(&mut self) -> Vec<String> {
+        let mut output = Vec::new();
+        while let Ok(line) = self.stderr.try_recv() {
+            output.push(line);
+        }
+        output
     }
 }
 

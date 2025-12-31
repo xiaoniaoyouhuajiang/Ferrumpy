@@ -252,6 +252,47 @@ impl PyReplSession {
         let res = session.fragment_validity(src);
         Ok(format!("{:?}", res))
     }
+
+    /// Interrupt any currently running evaluation
+    ///
+    /// This kills the subprocess and restarts it, effectively stopping any
+    /// long-running compilation or execution. The REPL state is preserved.
+    fn interrupt(&mut self) -> PyResult<()> {
+        let session = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Session not initialized"))?;
+
+        session
+            .interrupt()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// Drain all pending stdout lines from the subprocess
+    ///
+    /// Returns a list of output lines. Call this periodically to prevent
+    /// the subprocess from blocking on stdout writes.
+    fn drain_stdout(&mut self) -> PyResult<Vec<String>> {
+        let session = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Session not initialized"))?;
+
+        Ok(session.drain_stdout())
+    }
+
+    /// Drain all pending stderr lines from the subprocess
+    ///
+    /// Returns a list of error lines. Call this periodically to prevent
+    /// the subprocess from blocking on stderr writes.
+    fn drain_stderr(&mut self) -> PyResult<Vec<String>> {
+        let session = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Session not initialized"))?;
+
+        Ok(session.drain_stderr())
+    }
 }
 
 /// Generate a companion lib crate from a user's project

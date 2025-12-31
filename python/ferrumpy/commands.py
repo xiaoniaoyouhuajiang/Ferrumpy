@@ -639,13 +639,43 @@ def _cmd_repl(
         # Simple interactive loop
         buffer = []
         prev_line_empty = False
+        last_interrupt_time = None
+        INTERRUPT_TIMEOUT = 2.0  # 2 seconds window for second Ctrl+C
+        
         while True:
             try:
                 # Show continuation prompt if buffer not empty
                 prompt = ".. " if buffer else ">> "
                 print(prompt, end='', flush=True)
                 line = input()
-            except (EOFError, KeyboardInterrupt):
+                # Reset interrupt timer on successful input
+                last_interrupt_time = None
+            except KeyboardInterrupt:
+                import time
+                current_time = time.time()
+                
+                # Check if this is a second Ctrl+C within timeout
+                if last_interrupt_time and (current_time - last_interrupt_time) < INTERRUPT_TIMEOUT:
+                    result.AppendMessage("\n\nExiting REPL...")
+                    break
+                
+                # First Ctrl+C: interrupt running code
+                last_interrupt_time = current_time
+                result.AppendMessage("\nKeyboardInterrupt")
+                result.AppendMessage("(Press Ctrl+C again within 2 seconds to exit)")
+                
+                # Try to interrupt any running evaluation
+                try:
+                    session._session.interrupt()
+                    result.AppendMessage("Evaluation interrupted.")
+                except Exception as e:
+                    result.AppendMessage(f"Failed to interrupt: {e}")
+                
+                # Clear buffer and reset state
+                buffer = []
+                prev_line_empty = False
+                continue
+            except EOFError:
                 result.AppendMessage("\nExiting REPL...")
                 break
             

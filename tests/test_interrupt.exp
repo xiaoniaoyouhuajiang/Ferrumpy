@@ -1,0 +1,116 @@
+#!/usr/bin/expect -f
+set timeout 30
+
+# Start LLDB
+spawn lldb tests/rust_sample/target/debug/rust_sample
+
+# Import ferrumpy
+expect "(lldb)"
+send "command script import python/ferrumpy\r"
+expect "loaded"
+
+# Set breakpoint
+expect "(lldb)"
+send "b main.rs:94\r"
+expect "Breakpoint"
+
+# Run
+expect "(lldb)"
+send "run\r"
+expect "stop reason"
+
+# Start REPL
+expect "(lldb)"
+send "ferrumpy repl\r"
+expect "REPL ready"
+
+# Wait for prompt
+expect ">>"
+
+# Try to access a snapshot variable first
+send "tuple\r"
+expect {
+    -re "first.*2.*3.14|\\(.*\\)" {
+        puts "\n=== Snapshot variable accessible BEFORE interrupt ==="
+    }
+    timeout {
+        puts "\n=== ERROR: Could not access tuple before interrupt ==="
+        exit 1
+    }
+}
+
+expect ">>"
+
+#Send infinite loop
+send "loop \{\}\r"
+
+# Wait a bit for it to start
+sleep 1
+
+# Send Ctrl+C (ASCII 0x03)
+send "\x03"
+
+# Look for DEBUG messages
+expect {
+    -re "DEBUG.*Interrupt called" {
+        puts "\n=== Found: Interrupt called ==="
+    }
+    timeout {
+        puts "\n=== WARNING: Did not see 'Interrupt called' ==="
+    }
+}
+
+# Look for restoration
+expect {
+    -re "DEBUG.*Snapshot restored" {
+        puts "\n=== Found: Snapshot restored successfully ==="
+    }
+    -re "DEBUG.*restoration failed" {
+        puts "\n=== ERROR: Snapshot restoration FAILED ==="
+    }
+    timeout {
+        puts "\n=== WARNING: Did not see restoration message ==="
+    }
+}
+
+# Wait for prompt
+expect {
+    ">>" {
+        puts "\n=== Got prompt after interrupt ==="
+    }
+    timeout {
+        puts "\n=== ERROR: No prompt after interrupt ==="
+        exit 1
+    }
+}
+
+# Try to access tuple again
+send "tuple\r"
+expect {
+    -re "first.*2.*3.14|\\(.*\\)" {
+        puts "\n✓ SUCCESS: Snapshot variable still accessible AFTER interrupt!"
+        set result "PASS"
+    }
+    -re "error.*not found" {
+        puts "\n✗ FAIL: Snapshot variable lost after interrupt"
+        set result "FAIL"
+    }
+    timeout {
+        puts "\n✗ FAIL: Timeout waiting for tuple result"
+        set result "FAIL"
+    }
+}
+
+# Exit REPL
+expect ">>"
+send ":q\r"
+expect "(lldb)"
+
+# Exit LLDB
+send "quit\r"
+
+if {$result == "PASS"} {
+    exit 0
+} else {
+    exit 1
+}

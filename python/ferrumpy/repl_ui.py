@@ -374,7 +374,11 @@ def run_enhanced_repl(
     output_callback("  • Multi-line input (unclosed braces continue)")
     output_callback("  • History search: Ctrl+R")
     output_callback("  • Commands: :q (quit), :vars, :help")
+    output_callback("  • Interrupt: Ctrl+C (twice to exit)")
     output_callback("=" * 50 + "\n")
+    
+    last_interrupt_time = None
+    INTERRUPT_TIMEOUT = 2.0  # 2 seconds window for second Ctrl+C
     
     while True:
         try:
@@ -382,6 +386,9 @@ def run_enhanced_repl(
                 ">> ",
                 rprompt="[rust]",
             )
+            
+            # Reset interrupt timer on successful input
+            last_interrupt_time = None
             
             text = text.strip()
             
@@ -410,6 +417,9 @@ def run_enhanced_repl(
                 output_callback("  Type any Rust expression to evaluate")
                 output_callback("  Multi-line: open braces auto-continue")
                 output_callback("  Force submit: press Enter twice")
+                output_callback("\nInterrupt:")
+                output_callback("  Ctrl+C once      - Stop running code")
+                output_callback("  Ctrl+C twice     - Exit REPL")
                 continue
             
             # Evaluate Rust code
@@ -421,7 +431,26 @@ def run_enhanced_repl(
                 error_callback(str(e))
         
         except KeyboardInterrupt:
-            output_callback("\n(Ctrl+C)")
+            import time
+            current_time = time.time()
+            
+            # Check if this is a second Ctrl+C within timeout
+            if last_interrupt_time and (current_time - last_interrupt_time) < INTERRUPT_TIMEOUT:
+                output_callback("\n\n(Second Ctrl+C - exiting REPL)")
+                break
+            
+            # First Ctrl+C: interrupt running code
+            last_interrupt_time = current_time
+            output_callback("\nKeyboardInterrupt")
+            output_callback("(Press Ctrl+C again within 2 seconds to exit)")
+            
+            # Try to interrupt any running evaluation
+            try:
+                repl_session._session.interrupt()
+                output_callback("Evaluation interrupted.")
+            except Exception as e:
+                output_callback(f"Failed to interrupt: {e}")
+            
             continue
         except EOFError:
             output_callback("\n(Ctrl+D - exiting)")

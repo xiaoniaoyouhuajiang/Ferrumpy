@@ -12,6 +12,56 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
+import threading
+import time
+import sys
+
+# NOTE: OutputDrainer is disabled because:
+# 1. evcxr now has background threads that drain stdout/stderr internally
+# 2. In prompt_toolkit environments, background thread print() calls conflict with UI
+# 3. The draining happens automatically via evcxr's internal channels
+#
+# class OutputDrainer(threading.Thread):
+#     """
+#     Background thread that continuously drains subprocess output.
+#     
+#     This prevents stdout/stderr pipes from filling up and blocking the subprocess
+#     when background threads or async code produce output.
+#     """
+#     def __init__(self, session, output_callback=None):
+#         super().__init__(daemon=True)  # Daemon thread exits with main program
+#         self.session = session
+#         self.output_callback = output_callback or print
+#         self.running = True
+#         self.poll_interval = 0.02  # 20ms polling interval
+#     
+#     def run(self):
+#         """Main loop: continuously drain output."""
+#         while self.running:
+#             try:
+#                 # Drain stdout
+#                 stdout_lines = self.session.drain_stdout()
+#                 for line in stdout_lines:
+#                     print(line, flush=True)
+#                 
+#                 # Drain stderr
+#                 stderr_lines = self.session.drain_stderr()
+#                 for line in stderr_lines:
+#                     print(line, file=sys.stderr, flush=True)
+#                 
+#             except Exception as e:
+#                 # Ignore errors during draining (e.g., session closed)
+#                 # But print to debug if needed
+#                 # print(f"[Drainer error: {e}]", file=sys.stderr)
+#                 pass
+#             
+#             # Sleep to avoid busy-waiting
+#             time.sleep(self.poll_interval)
+#     
+#     def stop(self):
+#         """Stop the draining thread."""
+#         self.running = False
+
 
 try:
     import lldb
@@ -348,6 +398,7 @@ class EmbeddedReplSession:
         self._initialized = False
         self._lib_path = None
         self._lib_name = None
+        self._drainer = None  # Background thread for output draining
     
     def _get_rust_session(self):
         """Get or create the Rust ReplSession."""
@@ -442,21 +493,32 @@ class EmbeddedReplSession:
         # Step 3: Load variable snapshot (single compilation with all deps)
         if self.frame:
             data = serialize_frame(self.frame)
-            # Prepend lib use statement to snapshot data for single compilation
+            # Add lib metadata to snapshot for potential restoration after interrupt
             if lib_use_stmt:
                 data['lib_use_stmt'] = lib_use_stmt
+            if self._lib_path:
+                data['lib_path'] = str(self._lib_path)
+            if self._lib_name:
+                data['lib_name'] = self._lib_name
+            
             json_data = json.dumps(data)
             type_hints = ",".join(
                 f"{k}:{v}" for k, v in data.get('types', {}).items()
             )
             result = session.load_snapshot(json_data, type_hints)
             self._initialized = True
+            
+            # Note: OutputDrainer is disabled - evcxr handles draining internally
+            
             return result
         else:
             # If no frame, still need to compile lib dep
             if lib_use_stmt:
                 session.eval(lib_use_stmt)
             self._initialized = True
+            
+            # Note: OutputDrainer is disabled - evcxr handles draining internally
+            
             return "Initialized (no frame data)"
     
     def eval(self, code: str) -> str:
@@ -470,7 +532,50 @@ class EmbeddedReplSession:
             Evaluation result
         """
         session = self._get_rust_session()
-        return session.eval(code)
+        
+        # Note: Output draining happens automatically in evcxr's background threads.
+        # We don't call _drain_pending_output() here because print() conflicts
+        # with prompt_toolkit in enhanced mode, causing deadlock.
+        
+        try:
+            result = session.eval(code)
+            return result
+        except Exception as e:
+            error_msg = str(e)
+            # Check if the subprocess was terminated (e.g., by SIGINT)
+            if "Subprocess terminated" in error_msg or "SIGINT" in error_msg:
+                # Subprocess was killed, restore the snapshot
+                try:
+                    session.interrupt()  # This will restore the snapshot
+                    # Note: OutputDrainer disabled - no need to restart
+                except Exception as restore_error:
+                    # If restoration fails, re-raise the original error
+                    raise Exception(f"{error_msg}\n(Failed to restore snapshot: {restore_error})")
+            # Re-raise the original error
+            raise
+    
+    def _drain_pending_output(self):
+        """
+        Drain and display any pending output from the subprocess.
+        
+        This handles output from background threads or async operations that may
+        arrive after eval() returns. Output is displayed immediately to stdout/stderr.
+        """
+        # Skip draining if session not initialized yet
+        if not self._initialized or self._session is None:
+            return
+        
+        session = self._get_rust_session()
+        
+        # Drain stdout
+        stdout_lines = session.drain_stdout()
+        for line in stdout_lines:
+            print(line, flush=True)
+        
+        # Drain stderr
+        stderr_lines = session.drain_stderr()
+        for line in stderr_lines:
+            print(line, file=sys.stderr, flush=True)
     
     def add_dep(self, name: str, spec: str) -> str:
         """
