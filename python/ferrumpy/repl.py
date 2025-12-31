@@ -533,9 +533,11 @@ class EmbeddedReplSession:
         """
         session = self._get_rust_session()
         
-        # Note: Output draining happens automatically in evcxr's background threads.
-        # We don't call _drain_pending_output() here because print() conflicts
-        # with prompt_toolkit in enhanced mode, causing deadlock.
+        # Note: We intentionally don't drain stdout/stderr here.
+        # Draining can cause blocking with background threads and conflicts
+        # with prompt_toolkit. println! output may not display - this is a
+        # documented trade-off (see references/async_issue.md).
+        # Workaround: use format!() and return value instead of println!()
         
         try:
             result = session.eval(code)

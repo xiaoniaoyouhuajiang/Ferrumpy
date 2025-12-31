@@ -193,6 +193,129 @@ impl ReplSession {
             .map_err(|e| anyhow::anyhow!("Failed to add path dep: {:?}", e))
     }
 
+    // ============================================================================
+    // Snapshot Item-Level Export Helpers
+    // ============================================================================
+
+    /// Extract variables from snapshot JSON for item-level module generation
+    fn extract_variables(
+        &self,
+        snapshot: &serde_json::Value,
+    ) -> Result<Vec<(String, serde_json::Value, String)>> {
+        let mut vars = Vec::new();
+
+        let variables = snapshot
+            .get("variables")
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| anyhow::anyhow!("No variables in snapshot"))?;
+
+        let types_map = snapshot.get("types").and_then(|v| v.as_object());
+
+        for (name, value) in variables {
+            let type_hint: &str = types_map
+                .and_then(|m| m.get(name))
+                .and_then(|v| v.as_str())
+                .unwrap_or("serde_json::Value");
+
+            let actual_type = if self.is_supported_type(type_hint) {
+                self.normalize_rust_type(type_hint)
+            } else {
+                "serde_json::Value".to_string()
+            };
+
+            if !self.is_valid_for_deserialization(value, &actual_type) {
+                vars.push((name.clone(), value.clone(), "serde_json::Value".to_string()));
+            } else {
+                vars.push((name.clone(), value.clone(), actual_type));
+            }
+        }
+
+        Ok(vars)
+    }
+
+    /// Generate module containing snapshot variables as static items
+    fn generate_snapshot_module(
+        &self,
+        vars: &[(String, serde_json::Value, String)],
+    ) -> Result<String> {
+        // Use different name to avoid conflict with companion lib
+        let mut module_code = String::from("mod ferrumpy_vars {\n");
+        module_code.push_str("    use std::sync::OnceLock;\n");
+        module_code.push_str("    use std::collections::HashMap;\n");
+        module_code.push_str("    use std::sync::Arc;\n");
+        module_code.push_str("    use std::rc::Rc;\n");
+        // Import types from parent scope (user-defined types, companion lib types)
+        module_code.push_str("    use super::*;\n\n");
+
+        for (name, value, ty) in vars {
+            let item_code = self.generate_static_item(name, value, ty)?;
+            module_code.push_str(&item_code);
+            module_code.push_str("\n");
+        }
+
+        module_code.push_str("}\n");
+        Ok(module_code)
+    }
+
+    /// Generate a single static item with accessor function
+    fn generate_static_item(
+        &self,
+        name: &str,
+        value: &serde_json::Value,
+        type_hint: &str,
+    ) -> Result<String> {
+        let cell_name = format!("{}_CELL", name.to_uppercase());
+        let init_expr = self.generate_value_init_expr(value, type_hint)?;
+
+        let is_sync = self.is_likely_sync_type(type_hint);
+
+        if is_sync {
+            Ok(format!(
+                r#"    static {}: OnceLock<{}> = OnceLock::new();
+    
+    pub fn {}() -> &'static {} {{
+        {}.get_or_init(|| {{
+            {}
+        }})
+    }}
+"#,
+                cell_name, type_hint, name, type_hint, cell_name, init_expr
+            ))
+        } else {
+            Ok(format!(
+                r#"    thread_local! {{
+        static {}: std::cell::RefCell<Option<{}>> = 
+            std::cell::RefCell::new(None);
+    }}
+    
+    pub fn {}() -> {} {{
+        {}.with(|cell| {{
+            let mut opt = cell.borrow_mut();
+            if opt.is_none() {{
+                *opt = Some({});
+            }}
+            opt.as_ref().unwrap().clone()
+        }})
+    }}
+"#,
+                cell_name, type_hint, name, type_hint, cell_name, init_expr
+            ))
+        }
+    }
+
+    /// Heuristic to detect if a type is likely Sync
+    fn is_likely_sync_type(&self, type_hint: &str) -> bool {
+        let non_sync_markers = ["Rc<", "RefCell<", "Cell<", "*const", "*mut"];
+
+        for marker in &non_sync_markers {
+            if type_hint.contains(marker) {
+                return false;
+            }
+        }
+
+        true
+    }
+
     /// Load variables from serialized JSON snapshot using optimized single-compilation mode
     /// with TYPE-AWARE code generation for real Rust types
     pub fn load_snapshot(&mut self, json_data: &str, type_hints: &str) -> Result<String> {
@@ -233,6 +356,51 @@ impl ReplSession {
 
         // Get types map for type-aware code generation
         let types_map = snapshot.get("types").and_then(|v| v.as_object());
+
+        // Check if item-level export is enabled (opt-in: default off for backward compatibility)
+        // Set FERRUMPY_SNAPSHOT_ITEMS=1 to enable item-level export (function access pattern)
+        let use_items = std::env::var("FERRUMPY_SNAPSHOT_ITEMS")
+            .map(|v| v == "1")
+            .unwrap_or(false); // Default: legacy let-binding for backward compatibility
+
+        if use_items {
+            // ========== ITEM-LEVEL EXPORT PATH ==========
+            eprintln!("[DEBUG] Using item-level snapshot export");
+
+            let vars = self.extract_variables(&snapshot)?;
+            if vars.is_empty() {
+                return Ok("Snapshot loaded (no variables)".to_string());
+            }
+
+            let mut all_code = String::new();
+            if let Some(lib_use) = snapshot.get("lib_use_stmt").and_then(|v| v.as_str()) {
+                all_code.push_str(lib_use);
+                all_code.push('\n');
+            }
+            all_code.push_str("use serde::{Serialize, Deserialize};\n");
+            let module_code = self.generate_snapshot_module(&vars)?;
+            all_code.push_str(&module_code);
+            all_code.push('\n');
+            all_code.push_str("use ferrumpy_vars::*;\n");
+
+            self.eval(&all_code)?;
+            self.initialized = true;
+
+            let sample_names: Vec<&str> = vars.iter().take(5).map(|(n, _, _)| n.as_str()).collect();
+            return Ok(format!(
+                "Snapshot loaded with {} items. Access: {}{}",
+                vars.len(),
+                sample_names
+                    .iter()
+                    .map(|n| format!("{}()", n))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if vars.len() > 5 { ", ..." } else { "" }
+            ));
+        }
+
+        // ========== FALLBACK: Let-Binding Path ==========
+        eprintln!("[DEBUG] Using legacy let-binding snapshot export");
 
         // Step 3: Build all code in one batch
         let mut all_code = String::new();

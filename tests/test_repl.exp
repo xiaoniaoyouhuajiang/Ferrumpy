@@ -168,11 +168,47 @@ expect {
     }
 }
 
-# Note: Test 4b (function using snapshot variables) was removed.
-# evcxr's let bindings are local and cannot be accessed from user-defined functions.
+# Note: evcxr's let bindings are local and cannot be accessed from user-defined functions.
 # This is a known limitation - use closure captures or pass variables as parameters.
 
-# Test 4b: Define and call a recursive function
+# Test 4b: Define function with parameter and use format! to display snapshot data
+# This tests the recommended workaround pattern
+expect ">>"
+send "fn format_vec<T: std::fmt::Debug>(v: Vec<T>) -> String { format!(\"{:?}\", v) }\r"
+expect ">>"
+send "format_vec(numbers.clone())\r"
+expect {
+    -re {\[1, 2, 3, 4, 5\]} {
+        puts "✓ Function with format!() displays snapshot variable correctly"
+    }
+    "error" {
+        puts "\n✗ FAILED: format_vec(numbers) failed"
+        exit 1
+    }
+    timeout {
+        puts "\n✗ Timeout on format_vec test"
+        exit 1
+    }
+}
+
+# Test 4c: Test format! with matrix (nested Vec)
+expect ">>"
+send "format_vec(matrix.clone())\r"
+expect {
+    -re {\[\[.*\]\]} {
+        puts "✓ Function with format!() works with nested Vec (matrix)"
+    }
+    "error" {
+        puts "\n✗ FAILED: format_vec(matrix) failed"
+        exit 1
+    }
+    timeout {
+        puts "\n✗ Timeout on matrix format test"
+        exit 1
+    }
+}
+
+# Test 4d: Define and call a recursive function
 expect ">>"
 send "fn fib(n: u32) -> u32 { if n <= 1 { n } else { fib(n-1) + fib(n-2) } }\r"
 expect ">>"

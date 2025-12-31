@@ -406,12 +406,18 @@ def run_enhanced_repl(
                     output_callback(f"  {name}: {type_name}")
                 continue
             
+            if text == ':clear':
+                # Only clear screen, not REPL state or snapshot variables
+                import os
+                os.system('clear' if os.name != 'nt' else 'cls')
+                continue
+            
             if text == ':help':
                 output_callback("Commands:")
                 output_callback("  :q, :quit, :exit  - Exit REPL")
                 output_callback("  :vars             - Show captured variables")
                 output_callback("  :help             - Show this help")
-                output_callback("  :clear            - Clear rust-analyzer state")
+                output_callback("  :clear            - Clear screen")
                 output_callback("  :type <expr>      - Show type of expression")
                 output_callback("\nRust Evaluation:")
                 output_callback("  Type any Rust expression to evaluate")

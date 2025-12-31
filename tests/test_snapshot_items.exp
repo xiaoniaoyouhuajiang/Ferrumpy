@@ -1,0 +1,69 @@
+#!/usr/bin/expect -f
+# Test item-level snapshot export
+
+set timeout 30
+
+spawn lldb tests/rust_sample/target/debug/rust_sample
+expect "(lldb)"
+
+send "command script import python/ferrumpy\r"
+expect "FerrumPy"
+expect "(lldb)"
+
+send "b main.rs:94\r"
+expect "Breakpoint"
+expect "(lldb)"
+
+send "run\r"
+expect "main.rs:94"
+expect "(lldb)"
+
+send "ferrumpy repl\r"
+expect {
+    "items. Access:" {
+        puts "\n✅ Item-level export detected!"
+    }
+    "variables:" {
+        puts "\n⚠️  Using legacy let-binding mode"
+    }
+    timeout {
+        puts "\n❌ REPL initialization timeout"
+        exit 1
+    }
+}
+
+expect ">> "
+
+# Test: Define function that uses snapshot variable
+send "fn get_first() -> Option<&'static i32> { numbers().first() }\r"
+expect ">> "
+
+# Call the function
+send "get_first()\r"
+expect {
+    "Some(" {
+        puts "\n✅ SUCCESS! User function accessed snapshot variable!"
+        set success 1
+    }
+    "error" {
+        puts "\n❌ Function call failed"
+        set success 0
+    }
+    timeout {
+        puts "\n❌ Function call timeout"
+        set success 0
+    }
+}
+
+expect ">> "
+send ":q\r"
+expect "(lldb)"
+send "quit\r"
+
+if {$success == 1} {
+    puts "\n=== TEST PASSED ==="
+    exit 0
+} else {
+    puts "\n=== TEST FAILED ==="
+    exit 1
+}
