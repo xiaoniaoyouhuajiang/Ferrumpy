@@ -1,0 +1,86 @@
+#!/usr/bin/expect -f
+# Test item-level snapshot export functionality
+
+set timeout 30
+
+spawn lldb tests/rust_sample/target/debug/rust_sample
+expect "(lldb)"
+
+send "command script import python/ferrumpy\r"
+expect "FerrumPy"
+expect "(lldb)"
+
+send "b main.rs:94\r"
+expect "Breakpoint"
+expect "(lldb)"
+
+send "run\r"
+expect "main.rs:94"
+expect "(lldb)"
+
+# Force Simple Mode and enable item-level export
+send "script import os; os.environ\['FERRUMPY_SIMPLE_MODE'\] = '1'; os.environ\['FERRUMPY_SNAPSHOT_ITEMS'\] = '1'\r"
+expect "(lldb)"
+
+# Start REPL
+send "ferrumpy repl\r"
+expect {
+    "item-level snapshot export" {
+        puts "\n✅ REPL initialized with item-level export"
+    }
+    timeout {
+        puts "\n❌ REPL initialization timeout"
+        exit 1
+    }
+}
+
+# Test 1: Direct access to variables (now functions)
+expect ">>"
+send "simple_string()\r"
+expect {
+    "\"Hello, FerrumPy!\"" {
+        puts "\n✅ simple_string() works"
+    }
+    timeout {
+        puts "\n❌ simple_string() timeout"
+        exit 1
+    }
+}
+
+# Test 2: Access from user-defined function
+expect ">>"
+send "fn get_numbers() -> &'static Vec<i32> { numbers() }\r"
+expect ">>"
+send "get_numbers().len()\r"
+expect {
+    "5" {
+        puts "\n✅ User-defined function accessing snapshot variable works"
+    }
+    timeout {
+        puts "\n❌ User-defined function timeout"
+        exit 1
+    }
+}
+
+# Test 3: !Sync type (if available in sample, e.g., rc_value)
+expect ">>"
+send "rc_value()\r"
+expect {
+    "Object" {
+        puts "\n✅ rc_value() (thread_local!) works"
+    }
+    timeout {
+        puts "\n❌ rc_value() timeout"
+        exit 1
+    }
+}
+
+# Cleanup
+send ":q\r"
+expect "(lldb)"
+send "quit\r"
+expect "really want to proceed"
+send "Y\r"
+
+puts "\n=== Test PASSED ==="
+exit 0
