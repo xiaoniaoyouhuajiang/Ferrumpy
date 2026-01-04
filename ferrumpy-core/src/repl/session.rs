@@ -395,9 +395,9 @@ impl ReplSession {
         }
 
         // ========== FALLBACK: Let-Binding Path ==========
-        eprintln!("[DEBUG] Using legacy let-binding snapshot export");
 
-        let mut all_code = String::new();
+        // Step 2: Add companion lib and basic imports
+        let mut import_code = String::new();
 
         // Re-add companion library if it exists in the snapshot
         if let Some(lib_path) = snapshot.get("lib_path").and_then(|v| v.as_str()) {
@@ -406,31 +406,33 @@ impl ReplSession {
                 .and_then(|v| v.as_str())
                 .unwrap_or("ferrumpy_snapshot");
 
-            eprintln!(
-                "[DEBUG] Re-adding companion library: {} at {}",
-                lib_name, lib_path
-            );
             self.add_path_dep_silent(lib_name, Path::new(lib_path))?;
         }
 
         // Add companion lib use statement if present (from Python layer)
         if let Some(lib_use) = snapshot.get("lib_use_stmt").and_then(|v| v.as_str()) {
-            all_code.push_str(lib_use);
-            all_code.push('\n');
+            import_code.push_str(lib_use);
+            import_code.push('\n');
         }
 
         // Add standard library imports for common types
-        all_code.push_str("use std::sync::Arc;\n");
-        all_code.push_str("use std::rc::Rc;\n");
-        all_code.push_str("use std::collections::HashMap;\n");
+        import_code.push_str("use std::sync::Arc;\n");
+        import_code.push_str("use std::rc::Rc;\n");
+        import_code.push_str("use std::collections::HashMap;\n");
+        import_code.push_str("use serde::{Serialize, Deserialize};\n");
 
-        // Add serde imports (still needed for user types)
-        all_code.push_str("use serde::{Serialize, Deserialize};\n");
+        if !import_code.is_empty() {
+            self.eval(&import_code)?;
+        }
 
-        // Add variable declarations with TYPE-AWARE code generation
+        // Step 3 & 4: Load variables in groups for balance between speed and stability
         let mut loaded_vars: Vec<String> = Vec::new();
         if let Some(variables) = snapshot.get("variables") {
             if let Some(vars) = variables.as_object() {
+                let mut current_batch_code = String::new();
+                let mut current_batch_vars = Vec::new(); // (name, type, value)
+                let batch_size = 10;
+
                 for (name, value) in vars {
                     // Get the type hint for this variable
                     let type_hint = types_map
@@ -439,27 +441,41 @@ impl ReplSession {
                         .unwrap_or("serde_json::Value");
 
                     // Determine the actual type to use
-                    let mut actual_type = if self.is_supported_type(type_hint) {
+                    let actual_type = if self.is_supported_type(type_hint) {
                         self.normalize_rust_type(type_hint)
                     } else {
                         "serde_json::Value".to_string()
                     };
 
-                    if !self.is_valid_for_deserialization(value, &actual_type) {
-                        actual_type = "serde_json::Value".to_string();
+                    let final_type = if self.is_valid_for_deserialization(value, &actual_type) {
+                        actual_type
+                    } else {
+                        "serde_json::Value".to_string()
+                    };
+
+                    // Generate code for this variable
+                    if let Ok(code) = self.generate_typed_var_code(name, value, &final_type) {
+                        current_batch_code.push_str(&code);
+                        current_batch_code.push('\n');
+                        current_batch_vars.push((name.clone(), final_type, value.clone()));
                     }
 
-                    let code = self.generate_typed_var_code(name, value, &actual_type)?;
-                    all_code.push_str(&code);
-                    all_code.push('\n');
-                    loaded_vars.push(format!("{}: {}", name, actual_type));
+                    if current_batch_vars.len() >= batch_size {
+                        self.eval_batch(
+                            &current_batch_code,
+                            &current_batch_vars,
+                            &mut loaded_vars,
+                        )?;
+                        current_batch_code.clear();
+                        current_batch_vars.clear();
+                    }
+                }
+
+                // Process remaining variables
+                if !current_batch_vars.is_empty() {
+                    self.eval_batch(&current_batch_code, &current_batch_vars, &mut loaded_vars)?;
                 }
             }
-        }
-
-        // Step 4: Single compilation with all code
-        if !all_code.is_empty() {
-            self.eval(&all_code)?;
         }
 
         self.initialized = true;
@@ -473,6 +489,40 @@ impl ReplSession {
                 loaded_vars.len(),
                 loaded_vars.join(", ")
             ))
+        }
+    }
+
+    /// Evaluate a batch of variables and verify their presence.
+    /// Falls back to one-by-one loading if batch compilation fails.
+    fn eval_batch(
+        &mut self,
+        code: &str,
+        batch_vars: &[(String, String, serde_json::Value)],
+        loaded_vars: &mut Vec<String>,
+    ) -> Result<()> {
+        if code.is_empty() {
+            return Ok(());
+        }
+
+        match self.eval(code) {
+            Ok(_) => {
+                // Trust the batch compilation - all variables should be defined
+                for (name, final_type, _) in batch_vars {
+                    loaded_vars.push(format!("{}: {}", name, final_type));
+                }
+                Ok(())
+            }
+            Err(_) => {
+                // If batch fails, try each variable individually (without extra verification)
+                for (name, final_type, value) in batch_vars {
+                    if let Ok(single_code) = self.generate_typed_var_code(name, value, final_type) {
+                        if self.eval(&single_code).is_ok() {
+                            loaded_vars.push(format!("{}: {}", name, final_type));
+                        }
+                    }
+                }
+                Ok(())
+            }
         }
     }
 
@@ -498,6 +548,30 @@ impl ReplSession {
         value: &serde_json::Value,
         type_hint: &str,
     ) -> Result<String> {
+        // Check for __ferrumpy_kind__ metadata (special type handling)
+        // BUT: Skip if type_hint is serde_json::Value (fallback case for unsupported types)
+        if type_hint != "serde_json::Value" {
+            if let Some(kind) = value.get("__ferrumpy_kind__").and_then(|v| v.as_str()) {
+                return match kind {
+                    "option" => self.generate_option_code(value, type_hint),
+                    "result" => self.generate_result_code(value, type_hint),
+                    "tuple" => self.generate_tuple_code(value, type_hint),
+                    "array" => self.generate_array_code(value, type_hint),
+                    "arc" => self.generate_arc_code(value, type_hint),
+                    "rc" => self.generate_rc_code(value, type_hint),
+                    "box" => self.generate_box_code(value, type_hint),
+                    _ => {
+                        // Unknown kind, fall through to default handling
+                        let json_str = serde_json::to_string(value)?;
+                        Ok(format!(
+                            "serde_json::from_str::<serde_json::Value>(r#\"{}\"#).unwrap()",
+                            json_str
+                        ))
+                    }
+                };
+            }
+        }
+
         // Handle primitive types with literal generation
         match type_hint {
             // Integer types - generate literal
@@ -542,7 +616,7 @@ impl ReplSession {
                 }
             }
 
-            // Option types
+            // Option types (legacy path - now handled by __ferrumpy_kind__)
             t if t.starts_with("Option<") => {
                 let inner_type = &t[7..t.len() - 1];
                 if value.is_null() {
@@ -567,6 +641,213 @@ impl ReplSession {
         } else {
             Ok(format!(
                 "serde_json::from_str::<serde_json::Value>(r#\"{}\"#).unwrap()",
+                json_str
+            ))
+        }
+    }
+
+    /// Generate code for Option<T> from __ferrumpy_kind__ metadata
+    fn generate_option_code(&self, value: &serde_json::Value, type_hint: &str) -> Result<String> {
+        let variant = value
+            .get("__variant__")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        match variant {
+            "None" => Ok("None".to_string()),
+            "Some" => {
+                // Extract inner type from Option<T>
+                let inner_type = if type_hint.starts_with("Option<") && type_hint.ends_with(">") {
+                    &type_hint[7..type_hint.len() - 1]
+                } else {
+                    "serde_json::Value"
+                };
+
+                if let Some(inner) = value.get("__inner__") {
+                    let inner_code = self.generate_value_init_expr(inner, inner_type)?;
+                    Ok(format!("Some({})", inner_code))
+                } else {
+                    Ok("None".to_string())
+                }
+            }
+            _ => Ok("None".to_string()), // Unknown variant, default to None
+        }
+    }
+
+    /// Generate code for Result<T, E> from __ferrumpy_kind__ metadata
+    fn generate_result_code(&self, value: &serde_json::Value, type_hint: &str) -> Result<String> {
+        let variant = value
+            .get("__variant__")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        // Parse Result<T, E> to extract T and E types
+        let (ok_type, err_type) = self.parse_result_types(type_hint);
+
+        match variant {
+            "Ok" => {
+                if let Some(inner) = value.get("__inner__") {
+                    let inner_code = self.generate_value_init_expr(inner, &ok_type)?;
+                    Ok(format!("Ok({})", inner_code))
+                } else {
+                    Ok("Ok(())".to_string())
+                }
+            }
+            "Err" => {
+                if let Some(inner) = value.get("__inner__") {
+                    let inner_code = self.generate_value_init_expr(inner, &err_type)?;
+                    Ok(format!("Err({})", inner_code))
+                } else {
+                    Ok("Err(\"unknown\".to_string())".to_string())
+                }
+            }
+            _ => Ok("Err(\"unknown variant\".to_string())".to_string()),
+        }
+    }
+
+    /// Parse Result<T, E> to extract T and E
+    fn parse_result_types(&self, type_hint: &str) -> (String, String) {
+        if !type_hint.starts_with("Result<") || !type_hint.ends_with(">") {
+            return ("serde_json::Value".to_string(), "String".to_string());
+        }
+
+        let inner = &type_hint[7..type_hint.len() - 1];
+        // Simple split on ", " - may not work for nested generics
+        if let Some(comma_pos) = inner.find(", ") {
+            let ok_type = inner[..comma_pos].to_string();
+            let err_type = inner[comma_pos + 2..].to_string();
+            (ok_type, err_type)
+        } else {
+            (inner.to_string(), "String".to_string())
+        }
+    }
+
+    /// Generate code for tuple from __ferrumpy_kind__ metadata
+    fn generate_tuple_code(&self, value: &serde_json::Value, type_hint: &str) -> Result<String> {
+        let elements = value.get("__elements__").and_then(|v| v.as_array());
+
+        if let Some(elems) = elements {
+            // Parse tuple types from type_hint like "(i32, String, f64)"
+            let elem_types = self.parse_tuple_types(type_hint);
+
+            let mut parts = Vec::new();
+            for (i, elem) in elems.iter().enumerate() {
+                let elem_type = elem_types
+                    .get(i)
+                    .map(|s| s.as_str())
+                    .unwrap_or("serde_json::Value");
+                let part = self.generate_value_init_expr(elem, elem_type)?;
+                parts.push(part);
+            }
+
+            Ok(format!("({})", parts.join(", ")))
+        } else {
+            Ok("()".to_string())
+        }
+    }
+
+    /// Parse tuple type "(T1, T2, T3)" into vec of types
+    fn parse_tuple_types(&self, type_hint: &str) -> Vec<String> {
+        if !type_hint.starts_with("(") || !type_hint.ends_with(")") {
+            return vec![];
+        }
+
+        let inner = &type_hint[1..type_hint.len() - 1];
+        // Simple split - may not work for nested generics with commas
+        inner.split(", ").map(|s| s.to_string()).collect()
+    }
+
+    /// Generate code for fixed array from __ferrumpy_kind__ metadata
+    fn generate_array_code(&self, value: &serde_json::Value, type_hint: &str) -> Result<String> {
+        let elements = value.get("__elements__").and_then(|v| v.as_array());
+
+        if let Some(elems) = elements {
+            // Parse array type like "[i32; 5]" to get element type
+            let elem_type = self.parse_array_elem_type(type_hint);
+
+            let mut parts = Vec::new();
+            for elem in elems {
+                let part = self.generate_value_init_expr(elem, &elem_type)?;
+                parts.push(part);
+            }
+
+            Ok(format!("[{}]", parts.join(", ")))
+        } else {
+            Ok("[]".to_string())
+        }
+    }
+
+    /// Parse array type "[T; N]" to get element type T
+    fn parse_array_elem_type(&self, type_hint: &str) -> String {
+        // Handle "[i32; 5]" format
+        if type_hint.starts_with("[") && type_hint.contains(";") {
+            if let Some(semi_pos) = type_hint.find(';') {
+                return type_hint[1..semi_pos].trim().to_string();
+            }
+        }
+        // Handle "int[5]" C-style format
+        if let Some(bracket_pos) = type_hint.find('[') {
+            return type_hint[..bracket_pos].to_string();
+        }
+        "serde_json::Value".to_string()
+    }
+
+    /// Generate code for Arc<T> from __ferrumpy_kind__ metadata
+    fn generate_arc_code(&self, value: &serde_json::Value, type_hint: &str) -> Result<String> {
+        let inner_type = if type_hint.starts_with("Arc<") && type_hint.ends_with(">") {
+            &type_hint[4..type_hint.len() - 1]
+        } else {
+            "serde_json::Value"
+        };
+
+        if let Some(inner) = value.get("__inner__") {
+            let inner_code = self.generate_value_init_expr(inner, inner_type)?;
+            Ok(format!("std::sync::Arc::new({})", inner_code))
+        } else {
+            // Fallback to serde_json::Value
+            let json_str = serde_json::to_string(value)?;
+            Ok(format!(
+                "std::sync::Arc::new(serde_json::from_str::<serde_json::Value>(r#\"{}\"#).unwrap())",
+                json_str
+            ))
+        }
+    }
+
+    /// Generate code for Rc<T> from __ferrumpy_kind__ metadata
+    fn generate_rc_code(&self, value: &serde_json::Value, type_hint: &str) -> Result<String> {
+        let inner_type = if type_hint.starts_with("Rc<") && type_hint.ends_with(">") {
+            &type_hint[3..type_hint.len() - 1]
+        } else {
+            "serde_json::Value"
+        };
+
+        if let Some(inner) = value.get("__inner__") {
+            let inner_code = self.generate_value_init_expr(inner, inner_type)?;
+            Ok(format!("std::rc::Rc::new({})", inner_code))
+        } else {
+            let json_str = serde_json::to_string(value)?;
+            Ok(format!(
+                "std::rc::Rc::new(serde_json::from_str::<serde_json::Value>(r#\"{}\"#).unwrap())",
+                json_str
+            ))
+        }
+    }
+
+    /// Generate code for Box<T> from __ferrumpy_kind__ metadata
+    fn generate_box_code(&self, value: &serde_json::Value, type_hint: &str) -> Result<String> {
+        let inner_type = if type_hint.starts_with("Box<") && type_hint.ends_with(">") {
+            &type_hint[4..type_hint.len() - 1]
+        } else {
+            "serde_json::Value"
+        };
+
+        if let Some(inner) = value.get("__inner__") {
+            let inner_code = self.generate_value_init_expr(inner, inner_type)?;
+            Ok(format!("Box::new({})", inner_code))
+        } else {
+            let json_str = serde_json::to_string(value)?;
+            Ok(format!(
+                "Box::new(serde_json::from_str::<serde_json::Value>(r#\"{}\"#).unwrap())",
                 json_str
             ))
         }
@@ -674,10 +955,9 @@ impl ReplSession {
             return false;
         }
 
-        // Skip smart pointers (Arc/Rc/Box don't implement Deserialize by default)
-        // These require special serde features to deserialize
+        // Skip smart pointers if they don't have a type hint or are malformed
         if type_hint.contains("Arc<") || type_hint.contains("Rc<") || type_hint.contains("Box<") {
-            return false;
+            return type_hint.contains('<') && type_hint.ends_with('>');
         }
 
         // Skip RefCell/Cell (complex internal state, can't deserialize)
@@ -690,10 +970,8 @@ impl ReplSession {
             return false;
         }
 
-        // Skip C-style arrays (int[5] format - should be normalized, but check)
-        if type_hint.contains("[") && type_hint.contains("]") && !type_hint.starts_with("Vec") {
-            return false;
-        }
+        // NOW SUPPORTED: C-style arrays and Rust arrays via __ferrumpy_kind__ metadata
+        // (Removed the array exclusion)
 
         // Skip tuples containing references (e.g., (&str, i32))
         if type_hint.starts_with("(") && type_hint.contains("&") {
@@ -727,6 +1005,16 @@ impl ReplSession {
 
         // Check for error marker objects from Python serializer
         if let Some(obj) = value.as_object() {
+            // Allow __ferrumpy_kind__ metadata - but only if the type is actually supported
+            if obj.contains_key("__ferrumpy_kind__") {
+                // For types with references, we still can't deserialize
+                // is_supported_type already checked for this, so trust the type_hint
+                if type_hint.contains("&") {
+                    return false; // Contains reference, can't restore
+                }
+                return true;
+            }
+
             for key in obj.keys() {
                 // These markers indicate serialization failed in Python
                 if key.starts_with("__") && key.ends_with("__") {
@@ -735,6 +1023,7 @@ impl ReplSession {
             }
 
             // For Result<T, E>, need {"Ok": ...} or {"Err": ...} format
+            // (Legacy path - now handled by __ferrumpy_kind__)
             if type_hint.starts_with("Result<") {
                 if !obj.contains_key("Ok") && !obj.contains_key("Err") {
                     return false;

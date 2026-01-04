@@ -114,7 +114,17 @@ def normalize_type_name(lldb_type: str) -> str:
     if '<' in lldb_type:
         return _normalize_generic_type(lldb_type)
     
-    # Step 5: For unrecognized types with crate paths, extract last component
+    # Step 5: Handle C-style arrays (int[5] -> [i32; 5])
+    array_match = re.match(r'^(\w+)\[(\d+)\]$', lldb_type)
+    if array_match:
+        elem_type = array_match.group(1)
+        size = array_match.group(2)
+        # Normalize element type (e.g., int -> i32)
+        if elem_type in C_TO_RUST_TYPES:
+            elem_type = C_TO_RUST_TYPES[elem_type]
+        return f"[{elem_type}; {size}]"
+    
+    # Step 6: For unrecognized types with crate paths, extract last component
     if '::' in lldb_type and not lldb_type.startswith('&'):
         return _extract_type_name(lldb_type)
     
@@ -387,6 +397,14 @@ def value_to_json(value, visited: Optional[Set[int]] = None, depth: int = 0) -> 
     if any(p in type_name for p in ['Box<', 'Arc<', 'Rc<']):
         return _serialize_smart_pointer(value, visited, depth)
     
+    # Handle tuples (type name starts with '(')
+    if type_name.startswith('(') and type_name.endswith(')'):
+        return _serialize_tuple(value, visited, depth)
+    
+    # Handle fixed arrays (type contains '[' and ']' like 'int[5]' or '[i32; 5]')
+    if ('[' in type_name and ']' in type_name) or type_name.startswith('['):
+        return _serialize_fixed_array(value, visited, depth)
+    
     # Default: serialize as struct
     return _serialize_struct(value, visited, depth)
 
@@ -523,90 +541,267 @@ def _serialize_vec(value, visited: Set[int], depth: int = 0) -> List[Any]:
 
 
 def _serialize_option(value, visited: Set[int], depth: int = 0) -> Optional[Any]:
-    """Serialize an Option<T>."""
+    """Serialize an Option<T> with __ferrumpy_kind__ metadata."""
     type_name = value.GetType().GetName()
     
-    # Check for None variant
+    # Check for explicit None variant in type name
     if type_name.endswith('::None'):
-        return None
+        return {
+            "__ferrumpy_kind__": "option",
+            "__variant__": "None",
+            "__inner__": None
+        }
     
+    # Check for explicit Some variant in type name
     if type_name.endswith('::Some'):
-        # Get the inner value
         inner = value.GetChildAtIndex(0)
-        if inner.IsValid():
-            return value_to_json(inner, visited, depth+1)
-        return None
+        inner_value = value_to_json(inner, visited, depth+1) if inner.IsValid() else None
+        return {
+            "__ferrumpy_kind__": "option",
+            "__variant__": "Some",
+            "__inner__": inner_value
+        }
     
-    # Check discriminant
+    # Handle LLDB's $variants$ structure (common for niche-optimized enums)
+    # Structure: $variants$ -> $variant$0 (None) or $variant$1 (Some)
+    # Each variant has $discr$ (discriminant) and value
     variants = value.GetChildMemberWithName('$variants$')
     if variants.IsValid():
-        # Modern niche-optimized Option
-        discr = value.GetChildMemberWithName('$discr$')
-        if discr.IsValid():
-            discr_val = discr.GetValueAsUnsigned()
-            if discr_val == 0:
-                return None
+        # Check $variant$1 for Some (discriminant = 1)
+        variant1 = variants.GetChildMemberWithName('$variant$1')
+        if variant1.IsValid():
+            discr = variant1.GetChildMemberWithName('$discr$')
+            if discr.IsValid() and discr.GetValueAsUnsigned(0) == 1:
+                # It's Some - extract the inner value
+                val_child = variant1.GetChildMemberWithName('value')
+                if val_child.IsValid():
+                    # The actual value is in __0 or first child
+                    inner = val_child.GetChildMemberWithName('__0')
+                    if not inner.IsValid():
+                        inner = val_child.GetChildAtIndex(0)
+                    if inner.IsValid():
+                        inner_value = value_to_json(inner, visited, depth+1)
+                        return {
+                            "__ferrumpy_kind__": "option",
+                            "__variant__": "Some",
+                            "__inner__": inner_value
+                        }
+        
+        # Check $variant$0 for None (discriminant = 0)
+        variant0 = variants.GetChildMemberWithName('$variant$0')
+        if variant0.IsValid():
+            discr = variant0.GetChildMemberWithName('$discr$')
+            if discr.IsValid() and discr.GetValueAsUnsigned(1) == 0:
+                return {
+                    "__ferrumpy_kind__": "option",
+                    "__variant__": "None",
+                    "__inner__": None
+                }
     
-    # Try to get Some value
-    for i in range(value.GetNumChildren()):
+    # Fallback: check for direct child that looks like inner value
+    num_children = value.GetNumChildren()
+    for i in range(num_children):
         child = value.GetChildAtIndex(i)
         name = child.GetName() or ""
-        if 'Some' in name or '__0' in name:
-            return value_to_json(child, visited, depth+1)
+        # Skip internal LLDB fields
+        if name.startswith('$'):
+            continue
+        if 'Some' in name or name == '__0' or name == '0':
+            inner_value = value_to_json(child, visited, depth+1)
+            return {
+                "__ferrumpy_kind__": "option",
+                "__variant__": "Some",
+                "__inner__": inner_value
+            }
     
-    # Fallback: check if it looks like None
+    # Last resort: use summary
     summary = value.GetSummary()
-    if summary and 'None' in summary:
-        return None
+    if summary:
+        if 'Some' in summary:
+            # Try to parse value from summary like "Some(42)"
+            return {
+                "__ferrumpy_kind__": "option",
+                "__variant__": "Some",
+                "__summary__": summary
+            }
+        if 'None' in summary:
+            return {
+                "__ferrumpy_kind__": "option",
+                "__variant__": "None",
+                "__inner__": None
+            }
     
-    return {"__option__": "unknown"}
-
+    # Unknown
+    return {
+        "__ferrumpy_kind__": "option",
+        "__variant__": "unknown",
+        "__summary__": summary or ""
+    }
 
 def _serialize_result(value, visited: Set[int], depth: int = 0) -> Dict[str, Any]:
-    """Serialize a Result<T, E>."""
+    """Serialize a Result<T, E> with __ferrumpy_kind__ metadata."""
     type_name = value.GetType().GetName()
     
     if type_name.endswith('::Ok'):
         inner = value.GetChildAtIndex(0)
-        return {"Ok": value_to_json(inner, visited, depth+1) if inner.IsValid() else None}
+        inner_value = value_to_json(inner, visited, depth+1) if inner.IsValid() else None
+        return {
+            "__ferrumpy_kind__": "result",
+            "__variant__": "Ok",
+            "__inner__": inner_value
+        }
     
     if type_name.endswith('::Err'):
         inner = value.GetChildAtIndex(0)
-        return {"Err": value_to_json(inner, visited, depth+1) if inner.IsValid() else None}
+        inner_value = value_to_json(inner, visited, depth+1) if inner.IsValid() else None
+        return {
+            "__ferrumpy_kind__": "result",
+            "__variant__": "Err",
+            "__inner__": inner_value
+        }
     
     # Try to determine variant from structure
     summary = value.GetSummary()
     if summary:
         if 'Ok' in summary:
-            return {"Ok": summary}
+            return {
+                "__ferrumpy_kind__": "result",
+                "__variant__": "Ok",
+                "__summary__": summary
+            }
         if 'Err' in summary:
-            return {"Err": summary}
+            return {
+                "__ferrumpy_kind__": "result",
+                "__variant__": "Err",
+                "__summary__": summary
+            }
     
-    return {"__result__": "unknown"}
+    return {
+        "__ferrumpy_kind__": "result",
+        "__variant__": "unknown",
+        "__summary__": summary or ""
+    }
 
 
 def _serialize_smart_pointer(value, visited: Set[int], depth: int = 0) -> Any:
-    """Serialize Box/Arc/Rc by dereferencing."""
+    """Serialize Box/Arc/Rc with __ferrumpy_kind__ metadata."""
+    type_name = value.GetType().GetName()
+    
+    # Determine pointer kind
+    if 'Arc<' in type_name:
+        kind = "arc"
+    elif 'Rc<' in type_name:
+        kind = "rc"
+    elif 'Box<' in type_name:
+        kind = "box"
+    else:
+        kind = "ptr"
+    
     # Try to get the inner value
+    inner_value = None
+    
+    # Common field for Arc/Rc in some LLDB versions
     ptr = value.GetChildMemberWithName('ptr')
     if ptr.IsValid():
         pointer = ptr.GetChildMemberWithName('pointer')
         if pointer.IsValid():
             inner = pointer.Dereference()
             if inner.IsValid():
-                data = inner.GetChildMemberWithName('data')
-                if data.IsValid():
-                    return value_to_json(data, visited, depth+1)
-                return value_to_json(inner, visited, depth+1)
+                # Some versions have 'data' or 'value' field
+                for field_name in ['data', 'value']:
+                    data = inner.GetChildMemberWithName(field_name)
+                    if data.IsValid():
+                        inner_value = value_to_json(data, visited, depth+1)
+                        break
+                
+                if inner_value is None:
+                    # If it has 'strong' and 'weak' fields, it's the control block
+                    # The value might be in a 'value' field alongside them
+                    inner_value = value_to_json(inner, visited, depth+1)
     
+    # Proactive check for 'value' field if it's a known smart pointer type
+    if inner_value is None or (isinstance(inner_value, dict) and 'strong' in inner_value):
+        # Look for 'value' child directly
+        val_child = value.GetChildMemberWithName('value')
+        if not val_child.IsValid():
+            # Try to find any child named 'value' or 'data'
+            for i in range(value.GetNumChildren()):
+                child = value.GetChildAtIndex(i)
+                if child.GetName() in ['value', 'data']:
+                    val_child = child
+                    break
+        
+        if val_child.IsValid():
+            # If the child itself is the control block (contains strong/weak)
+            # we need to go deeper
+            if val_child.GetChildMemberWithName('strong').IsValid():
+                real_val = val_child.GetChildMemberWithName('value')
+                if real_val.IsValid():
+                    inner_value = value_to_json(real_val, visited, depth+1)
+            else:
+                inner_value = value_to_json(val_child, visited, depth+1)
+
     # Fallback: try first child
-    if value.GetNumChildren() > 0:
+    if inner_value is None and value.GetNumChildren() > 0:
         child = value.GetChildAtIndex(0)
         deref = child.Dereference()
         if deref.IsValid():
-            return value_to_json(deref, visited, depth+1)
+            inner_value = value_to_json(deref, visited, depth+1)
+        else:
+            # If dereference fails, maybe the child is the value (e.g. Box in some cases)
+            inner_value = value_to_json(child, visited, depth+1)
     
-    return {"__ptr__": "opaque"}
+    # Final check: if we still have 'strong'/'weak' in the result, it's failed to extract
+    if isinstance(inner_value, dict) and ('strong' in inner_value or 'weak' in inner_value):
+        # Try to extract 'value' from it if present
+        if 'value' in inner_value:
+            inner_value = inner_value['value']
+
+    return {
+        "__ferrumpy_kind__": kind,
+        "__inner__": inner_value
+    }
+
+
+def _serialize_tuple(value, visited: Set[int], depth: int = 0) -> Dict[str, Any]:
+    """Serialize a tuple with __ferrumpy_kind__ metadata."""
+    elements = []
+    type_name = value.GetType().GetName()
+    
+    num_children = value.GetNumChildren()
+    for i in range(num_children):
+        child = value.GetChildAtIndex(i)
+        if child.IsValid():
+            elements.append(value_to_json(child, visited, depth+1))
+        else:
+            elements.append(None)
+    
+    return {
+        "__ferrumpy_kind__": "tuple",
+        "__elements__": elements,
+        "__type__": type_name
+    }
+
+
+def _serialize_fixed_array(value, visited: Set[int], depth: int = 0) -> Dict[str, Any]:
+    """Serialize a fixed-size array with __ferrumpy_kind__ metadata."""
+    elements = []
+    type_name = value.GetType().GetName()
+    
+    num_children = value.GetNumChildren()
+    for i in range(min(num_children, 100)):  # Limit for performance
+        child = value.GetChildAtIndex(i)
+        if child.IsValid():
+            elements.append(value_to_json(child, visited, depth+1))
+        else:
+            elements.append(None)
+    
+    return {
+        "__ferrumpy_kind__": "array",
+        "__elements__": elements,
+        "__type__": type_name,
+        "__length__": num_children
+    }
 
 
 def _serialize_struct(value, visited: Set[int], depth: int = 0) -> Dict[str, Any]:
