@@ -77,6 +77,64 @@ Evaluate a Rust expression.
 - Method calls: `x.len()`
 - Field access in expressions (use `ferrumpy pp` instead)
 
+### `ferrumpy repl`
+
+Start an embedded Rust REPL (evcxr) with access to current variables from the debug session.
+
+```
+(lldb) ferrumpy repl
+Snapshot loaded with 5 items. Access: user(), items(), config(), ...
+>> 
+```
+
+**Variable Access (Important):**
+Variables captured from the debugger are exposed as **accessor functions**. You must call them with `()` to access their values. This ensures variables remain available throughout the REPL session without being moved.
+
+```rust
+// ✅ Correct: Access as function call
+>> user()
+User { name: "Alice", age: 30 }
+
+// ❌ Incorrect: Direct variable access
+>> user
+error[E0425]: cannot find ...
+
+// Accessing fields and methods works naturally on the result
+>> user().name
+"Alice"
+
+>> items().len()
+3
+```
+
+**Getting Ownership:**
+The accessor functions return a reference (or a cloned value for copy types). To get an owned value (e.g., to pass to a function that takes ownership), use `.clone()`:
+
+```rust
+// Create a local variable with ownership
+>> let my_user = user().clone();
+>> process_user(my_user); // OK: moves my_user
+```
+
+**Restoring Complex Types:**
+Some types (HashMap, Tuple, generic containers) are stored as JSON and need manual restoration using the `restore!` macro:
+
+```rust
+// View the JSON data
+>> map()
+Object({"one": Number(1), "two": Number(2)})
+
+// Restore to original type using restore! macro
+>> let my_map = restore!(map, HashMap<String, i32>);
+>> my_map.get("one")
+Some(1)
+
+// For tuples
+>> let my_tuple = restore!(tuple_var, (i32, String, bool));
+>> my_tuple.0
+42
+```
+
 ### `ferrumpy type <expr>`
 
 Display type information for a variable.

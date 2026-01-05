@@ -85,7 +85,7 @@ PRIMITIVE_TYPES = {
 def normalize_type_name(lldb_type: str) -> str:
     """
     Convert LLDB type name to clean Rust source type name.
-    
+
     This function handles:
     1. C-style type names -> Rust types (int -> i32)
     2. Allocator removal (Vec<i32, Global> -> Vec<i32>)
@@ -95,36 +95,46 @@ def normalize_type_name(lldb_type: str) -> str:
     """
     if not lldb_type:
         return lldb_type
-    
+
     # Step 1: Remove all allocator parameters first (before any other processing)
     lldb_type = _remove_allocators(lldb_type)
-    
+
     # Step 2: Map simple C types to Rust types
     if lldb_type in C_TO_RUST_TYPES:
         return C_TO_RUST_TYPES[lldb_type]
-    
+
     # Step 3: Apply normalization rules (module path simplification)
     for pattern, replacement in TYPE_NORMALIZATION:
         if re.match(pattern, lldb_type):
             result = re.sub(pattern, replacement, lldb_type)
             # Recursively normalize inner types
             return _normalize_inner_types(result)
-    
+
     # Step 4: Handle generic types with C types inside
     if '<' in lldb_type:
         return _normalize_generic_type(lldb_type)
-    
-    # Step 5: For unrecognized types with crate paths, extract last component
+
+    # Step 5: Handle C-style arrays (int[5] -> [i32; 5])
+    array_match = re.match(r'^(\w+)\[(\d+)\]$', lldb_type)
+    if array_match:
+        elem_type = array_match.group(1)
+        size = array_match.group(2)
+        # Normalize element type (e.g., int -> i32)
+        if elem_type in C_TO_RUST_TYPES:
+            elem_type = C_TO_RUST_TYPES[elem_type]
+        return f"[{elem_type}; {size}]"
+
+    # Step 6: For unrecognized types with crate paths, extract last component
     if '::' in lldb_type and not lldb_type.startswith('&'):
         return _extract_type_name(lldb_type)
-    
+
     return lldb_type
 
 
 def _remove_allocators(type_str: str) -> str:
     """
     Remove allocator parameters from type strings.
-    
+
     Examples:
         Vec<i32, alloc::alloc::Global> -> Vec<i32>
         Vec<Vec<i32, alloc::alloc::Global>, alloc::alloc::Global> -> Vec<Vec<i32>>
@@ -137,18 +147,18 @@ def _remove_allocators(type_str: str) -> str:
         r',\s*std::hash::random::RandomState',
         r',\s*std::collections::hash::map::RandomState',
     ]
-    
+
     result = type_str
     for pattern in allocator_patterns:
         result = re.sub(pattern, '', result)
-    
+
     return result
 
 
 def _normalize_generic_type(type_str: str) -> str:
     """
     Normalize a generic type by processing outer type and inner types separately.
-    
+
     Examples:
         Vec<int> -> Vec<i32>
         Option<unsigned long> -> Option<u64>
@@ -158,26 +168,26 @@ def _normalize_generic_type(type_str: str) -> str:
     match = re.match(r'^([^<]+)<(.+)>$', type_str)
     if not match:
         return type_str
-    
+
     outer = match.group(1)
     inner = match.group(2)
-    
+
     # Normalize outer type (remove module paths)
     outer = _simplify_module_path(outer)
-    
+
     # Split inner types carefully (handling nested generics)
     inner_types = _split_generic_params(inner)
-    
+
     # Normalize each inner type recursively
     normalized_inner = [normalize_type_name(t.strip()) for t in inner_types]
-    
+
     return f"{outer}<{', '.join(normalized_inner)}>"
 
 
 def _split_generic_params(params: str) -> List[str]:
     """
     Split generic parameters respecting nested angle brackets.
-    
+
     Examples:
         "i32, String" -> ["i32", "String"]
         "Vec<i32>, Option<String>" -> ["Vec<i32>", "Option<String>"]
@@ -185,7 +195,7 @@ def _split_generic_params(params: str) -> List[str]:
     result = []
     current = ""
     depth = 0
-    
+
     for char in params:
         if char == '<':
             depth += 1
@@ -198,17 +208,17 @@ def _split_generic_params(params: str) -> List[str]:
             current = ""
         else:
             current += char
-    
+
     if current.strip():
         result.append(current.strip())
-    
+
     return result
 
 
 def _simplify_module_path(type_name: str) -> str:
     """
     Simplify module paths to just the type name.
-    
+
     Examples:
         alloc::vec::Vec -> Vec
         alloc::string::String -> String
@@ -228,29 +238,29 @@ def _simplify_module_path(type_name: str) -> str:
         'std::cell::RefCell': 'RefCell',
         'std::cell::Cell': 'Cell',
     }
-    
+
     if type_name in known_types:
         return known_types[type_name]
-    
+
     # For unknown types, extract last component
     if '::' in type_name:
         return type_name.split('::')[-1]
-    
+
     return type_name
 
 
 def _extract_type_name(full_path: str) -> str:
     """
     Extract the type name from a full crate path.
-    
+
     Examples:
         rust_sample::User -> User
         my_crate::models::Config -> Config
         alloc::string::String -> String
     """
-    if not '::' in full_path:
+    if '::' not in full_path:
         return full_path
-    
+
     # Handle generics: my_crate::Wrapper<T> -> Wrapper<T>
     if '<' in full_path:
         match = re.match(r'^([^<]+)<(.+)>$', full_path)
@@ -260,14 +270,14 @@ def _extract_type_name(full_path: str) -> str:
             # Recursively normalize inner types
             inner_normalized = normalize_type_name(inner)
             return f"{outer}<{inner_normalized}>"
-    
+
     return full_path.split('::')[-1]
 
 
 def _normalize_inner_types(type_str: str) -> str:
     """
     Recursively normalize types inside generics.
-    
+
     This handles C types in generic parameters:
         Vec<int> -> Vec<i32>
         Option<unsigned long> -> Option<u64>
@@ -275,11 +285,11 @@ def _normalize_inner_types(type_str: str) -> str:
     # If this is a generic type, parse and normalize recursively
     if '<' in type_str:
         return _normalize_generic_type(type_str)
-    
+
     # Replace C types
     if type_str in C_TO_RUST_TYPES:
         return C_TO_RUST_TYPES[type_str]
-    
+
     return type_str
 
 
@@ -293,7 +303,7 @@ def is_primitive(type_name: str) -> bool:
 def serialize_frame(frame) -> Dict[str, Any]:
     """
     Serialize all local variables in a frame to JSON.
-    
+
     Returns:
         {
             "variables": {
@@ -308,19 +318,19 @@ def serialize_frame(frame) -> Dict[str, Any]:
     """
     if frame is None or not frame.IsValid():
         return {"variables": {}, "types": {}}
-    
+
     variables = {}
     types = {}
     visited = set()  # Track visited addresses to avoid cycles
-    
+
     for var in frame.GetVariables(True, True, False, True):
         if not var.IsValid():
             continue
-        
+
         name = var.GetName()
         if name is None or name.startswith('$'):
             continue
-        
+
         try:
             value = value_to_json(var, visited)
             variables[name] = value
@@ -329,7 +339,7 @@ def serialize_frame(frame) -> Dict[str, Any]:
             # Skip variables that can't be serialized
             variables[name] = {"__error__": str(e)}
             types[name] = "?"
-    
+
     return {"variables": variables, "types": types}
 
 
@@ -339,16 +349,16 @@ def value_to_json(value, visited: Optional[Set[int]] = None, depth: int = 0) -> 
     """
     if visited is None:
         visited = set()
-    
+
     if not value.IsValid():
         return None
-    
+
     # Limit recursion depth
     if depth > 20:
         return {"__truncated__": "max depth"}
-    
+
     type_name = value.GetType().GetName()
-    
+
     # Check for cycles only on heap pointers (not stack locals)
     # Heap addresses are typically very high, stack addresses are lower
     addr = value.GetLoadAddress()
@@ -358,35 +368,80 @@ def value_to_json(value, visited: Optional[Set[int]] = None, depth: int = 0) -> 
         if addr in visited:
             return {"__cycle__": f"0x{addr:x}"}
         visited.add(addr)
-    
+
     # Handle primitives
     if is_primitive(type_name):
         return _serialize_primitive(value)
-    
+
     # Handle String
     if 'String' in type_name and 'alloc::string::String' in type_name:
         return _serialize_string(value)
-    
+
     # Handle &str
     if type_name == '&str':
         return _serialize_str_ref(value)
-    
+
     # Handle Vec
     if 'Vec<' in type_name:
         return _serialize_vec(value, visited, depth)
-    
+
     # Handle Option
     if 'Option<' in type_name:
         return _serialize_option(value, visited, depth)
-    
+
     # Handle Result
     if 'Result<' in type_name:
         return _serialize_result(value, visited, depth)
-    
+
+    # Handle HashMap - use GetSummary() which returns formatted key-value pairs
+    if 'HashMap<' in type_name:
+        return _serialize_hashmap(value, visited, depth)
+
     # Handle Box/Arc/Rc (smart pointers)
     if any(p in type_name for p in ['Box<', 'Arc<', 'Rc<']):
         return _serialize_smart_pointer(value, visited, depth)
-    
+
+    # Handle tuples (type name starts with '(')
+    if type_name.startswith('(') and type_name.endswith(')'):
+        return _serialize_tuple(value, visited, depth)
+
+    # Handle fixed arrays (type contains '[' and ']' like 'int[5]' or '[i32; 5]')
+    if ('[' in type_name and ']' in type_name) or type_name.startswith('['):
+        return _serialize_fixed_array(value, visited, depth)
+
+    # Handle user-defined enums
+    variants = value.GetChildMemberWithName('$variants$')
+    if variants.IsValid():
+        res = _serialize_enum(value, visited, depth)
+        if res:
+            return res
+
+    # Also check for explicit variant in type name (e.g., Status::Active, Option::Some)
+    # OR if it's a C-style enum (has summary but no variants)
+    if '::' in type_name:
+        parts = type_name.split('::')
+        last_part = parts[-1] if parts else ""
+        # Skip standard library types we handle elsewhere
+        if last_part and last_part[0].isupper():
+            known_std = ['Vec', 'Option', 'Result', 'Arc', 'Rc', 'Box', 'String',
+                        'HashMap', 'RefCell', 'Cell', 'Mutex', 'RwLock']
+            if not any(k in type_name for k in known_std):
+                # Heuristic: if it has lowercase child names, it's likely a struct, not an enum
+                is_struct = False
+                num_children = value.GetNumChildren()
+                if num_children > 0:
+                    for i in range(min(num_children, 5)): # Check first few children
+                        child = value.GetChildAtIndex(i)
+                        name = child.GetName() or ""
+                        if name and name[0].islower() and not name.startswith('$'):
+                            is_struct = True
+                            break
+
+                if not is_struct:
+                    res = _serialize_enum(value, visited, depth)
+                    if res:
+                        return res
+
     # Default: serialize as struct
     return _serialize_struct(value, visited, depth)
 
@@ -394,12 +449,12 @@ def value_to_json(value, visited: Optional[Set[int]] = None, depth: int = 0) -> 
 def _serialize_primitive(value) -> Any:
     """Serialize a primitive type."""
     type_name = value.GetType().GetName()
-    
+
     # Try to get the value directly
     val_str = value.GetValue()
     if val_str is None:
         return None
-    
+
     # Parse based on type
     if type_name in ('bool', '_Bool'):
         return val_str.lower() == 'true'
@@ -416,59 +471,178 @@ def _serialize_primitive(value) -> Any:
             # Maybe it's a float in disguise
             try:
                 return float(val_str)
-            except:
+            except Exception:
                 return val_str
 
 
 
 def _serialize_string(value) -> str:
-    """Serialize a Rust String."""
-    # Try LLDB summary first
+    """Serialize a Rust String.
+
+    String layout: { vec: Vec<u8> { buf: RawVec { ptr, cap }, len } }
+    We try GetSummary first, then fall back to direct memory reading.
+    """
+    # Try LLDB summary first (most reliable when it works)
     summary = value.GetSummary()
     if summary:
-        # Remove surrounding quotes
         return summary.strip('"')
-    
-    # Fallback: read from memory
+
+    process = value.GetProcess()
+    if not process or not process.IsValid():
+        return ""
+
+    # Get the Vec<u8> inside String
     vec = value.GetChildMemberWithName('vec')
     if not vec.IsValid():
+        # Try direct children access
+        if value.GetNumChildren() > 0:
+            vec = value.GetChildAtIndex(0)
+
+    if not vec or not vec.IsValid():
         return ""
-    
+
+    # Get length
     len_child = vec.GetChildMemberWithName('len')
     if not len_child.IsValid():
         return ""
-    
+
     length = len_child.GetValueAsUnsigned()
     if length == 0:
         return ""
-    
-    # Get data pointer
-    buf = vec.GetChildMemberWithName('buf')
-    if not buf.IsValid():
+
+    if length > 10000:  # Sanity check
         return f"<String len={length}>"
-    
-    # Try to read the actual bytes
-    try:
-        from .providers import _find_pointer_in_buf
-        ptr = _find_pointer_in_buf(buf)
-        if ptr and ptr.IsValid():
-            ptr_addr = ptr.GetValueAsUnsigned()
-            if ptr_addr:
+
+    # Try multiple paths to get the data pointer
+    ptr_addr = None
+
+    # Path 1: Try the original _find_pointer_in_buf method
+    buf = vec.GetChildMemberWithName('buf')
+    if buf.IsValid():
+        try:
+            from .providers import _find_pointer_in_buf
+            ptr = _find_pointer_in_buf(buf)
+            if ptr and ptr.IsValid():
+                ptr_addr = ptr.GetValueAsUnsigned()
+        except Exception:
+            pass
+
+    # Path 2: Navigate buf -> inner -> ptr -> pointer (newer Rust)
+    if not ptr_addr and buf and buf.IsValid():
+        for path in [
+            ['inner', 'ptr', 'pointer'],
+            ['ptr', 'pointer'],
+            ['inner', 'ptr'],
+            ['ptr'],
+        ]:
+            node = buf
+            for step in path:
+                child = node.GetChildMemberWithName(step)
+                if child.IsValid():
+                    node = child
+                else:
+                    node = None
+                    break
+            if node and node.IsValid():
+                addr = node.GetValueAsUnsigned()
+                if addr and addr > 0x1000:  # Valid address check
+                    ptr_addr = addr
+                    break
+
+    # Path 3: Try first child of buf as pointer
+    if not ptr_addr and buf and buf.IsValid():
+        for i in range(min(buf.GetNumChildren(), 5)):
+            child = buf.GetChildAtIndex(i)
+            if child.IsValid():
+                addr = child.GetValueAsUnsigned()
+                if addr and addr > 0x1000:
+                    ptr_addr = addr
+                    break
+
+    # Path 4: Read raw memory at String's address
+    # String in memory: starts with ptr (8 bytes on 64-bit)
+    if not ptr_addr:
+        addr = value.GetLoadAddress()
+        if addr != 0xFFFFFFFFFFFFFFFF:  # LLDB_INVALID_ADDRESS
+            try:
+                import struct
                 error = lldb.SBError()
-                data = value.GetProcess().ReadMemory(ptr_addr, min(length, 1024), error)
-                if not error.Fail():
-                    return data.decode('utf-8', errors='replace')
-    except:
-        pass
-    
+                # Read 24 bytes (ptr + cap + len on 64-bit)
+                data = process.ReadMemory(addr, 24, error)
+                if not error.Fail() and len(data) >= 8:
+                    ptr_addr = struct.unpack('Q', data[:8])[0]  # First 8 bytes is ptr
+            except Exception:
+                pass
+
+    # Now read the actual string data
+    if ptr_addr:
+        error = lldb.SBError()
+        data = process.ReadMemory(ptr_addr, min(length, 4096), error)
+        if not error.Fail():
+            return data.decode('utf-8', errors='replace')
+
     return f"<String len={length}>"
 
 
 def _serialize_str_ref(value) -> str:
-    """Serialize a &str reference."""
+    """Serialize a &str reference.
+
+    &str is a fat pointer: (data_ptr: *const u8, length: usize)
+    We try GetSummary first, then fall back to direct memory reading.
+    """
+    # Try LLDB summary first
     summary = value.GetSummary()
     if summary:
         return summary.strip('"')
+
+    # Fallback: read from memory using fat pointer structure
+    process = value.GetProcess()
+    if not process or not process.IsValid():
+        return "<&str>"
+
+    # Pattern 1: Try direct children (index 0 = ptr, index 1 = len)
+    if value.GetNumChildren() >= 2:
+        ptr_child = value.GetChildAtIndex(0)
+        len_child = value.GetChildAtIndex(1)
+        if ptr_child.IsValid() and len_child.IsValid():
+            ptr_addr = ptr_child.GetValueAsUnsigned()
+            str_len = len_child.GetValueAsUnsigned()
+            if ptr_addr and str_len and str_len < 10000:  # Sanity check
+                error = lldb.SBError()
+                data = process.ReadMemory(ptr_addr, min(str_len, 4096), error)
+                if not error.Fail():
+                    return data.decode('utf-8', errors='replace')
+
+    # Pattern 2: Try named children (data_ptr, length)
+    data_ptr = value.GetChildMemberWithName('data_ptr')
+    length = value.GetChildMemberWithName('length')
+    if data_ptr.IsValid() and length.IsValid():
+        ptr_addr = data_ptr.GetValueAsUnsigned()
+        str_len = length.GetValueAsUnsigned()
+        if ptr_addr and str_len and str_len < 10000:
+            error = lldb.SBError()
+            data = process.ReadMemory(ptr_addr, min(str_len, 4096), error)
+            if not error.Fail():
+                return data.decode('utf-8', errors='replace')
+
+    # Pattern 3: Read raw memory at value's address
+    # &str in memory on 64-bit: [ptr: 8 bytes][len: 8 bytes]
+    addr = value.GetLoadAddress()
+    if addr != 0xFFFFFFFFFFFFFFFF:  # LLDB_INVALID_ADDRESS
+        try:
+            import struct
+            error = lldb.SBError()
+            # Read 16 bytes (ptr + len on 64-bit)
+            data = process.ReadMemory(addr, 16, error)
+            if not error.Fail() and len(data) == 16:
+                ptr_addr, str_len = struct.unpack('QQ', data)  # Two 64-bit values
+                if ptr_addr and str_len and str_len < 10000:  # Sanity check
+                    str_data = process.ReadMemory(ptr_addr, min(str_len, 4096), error)
+                    if not error.Fail():
+                        return str_data.decode('utf-8', errors='replace')
+        except Exception:
+            pass
+
     return "<&str>"
 
 
@@ -477,164 +651,543 @@ def _serialize_vec(value, visited: Set[int], depth: int = 0) -> List[Any]:
     len_child = value.GetChildMemberWithName('len')
     if not len_child.IsValid():
         return []
-    
+
     length = len_child.GetValueAsUnsigned()
     if length == 0:
         return []
-    
+
     # Get element type
     vec_type = value.GetType()
     elem_type = vec_type.GetTemplateArgumentType(0)
     if not elem_type.IsValid():
         return [f"<{length} elements>"]
-    
+
     elem_size = elem_type.GetByteSize()
-    
+
     # Get data pointer
     buf = value.GetChildMemberWithName('buf')
     if not buf.IsValid():
         return [f"<{length} elements>"]
-    
+
     try:
         from .providers import _find_pointer_in_buf
         ptr = _find_pointer_in_buf(buf)
         if not ptr or not ptr.IsValid():
             return [f"<{length} elements>"]
-        
+
         ptr_addr = ptr.GetValueAsUnsigned()
         if ptr_addr == 0:
             return []
-        
+
         # Serialize elements (limit to 100 for performance)
         elements = []
         max_elements = min(length, 100)
-        
+
         for i in range(max_elements):
             addr = ptr_addr + i * elem_size
             elem = value.CreateValueFromAddress(f"[{i}]", addr, elem_type)
             elements.append(value_to_json(elem, visited, depth+1))
-        
+
         if length > max_elements:
             elements.append(f"... ({length - max_elements} more)")
-        
+
         return elements
-    except:
+    except Exception:
         return [f"<{length} elements>"]
 
 
 def _serialize_option(value, visited: Set[int], depth: int = 0) -> Optional[Any]:
-    """Serialize an Option<T>."""
+    """Serialize an Option<T> with __ferrumpy_kind__ metadata."""
     type_name = value.GetType().GetName()
-    
-    # Check for None variant
+
+    # Check for explicit None variant in type name
     if type_name.endswith('::None'):
-        return None
-    
+        return {
+            "__ferrumpy_kind__": "option",
+            "__variant__": "None",
+            "__inner__": None
+        }
+
+    # Check for explicit Some variant in type name
     if type_name.endswith('::Some'):
-        # Get the inner value
         inner = value.GetChildAtIndex(0)
-        if inner.IsValid():
-            return value_to_json(inner, visited, depth+1)
-        return None
-    
-    # Check discriminant
+        inner_value = value_to_json(inner, visited, depth+1) if inner.IsValid() else None
+        return {
+            "__ferrumpy_kind__": "option",
+            "__variant__": "Some",
+            "__inner__": inner_value
+        }
+
+    # Handle LLDB's $variants$ structure (common for niche-optimized enums)
+    # Structure: $variants$ -> $variant$0 (None) or $variant$1 (Some)
+    # Each variant has $discr$ (discriminant) and value
     variants = value.GetChildMemberWithName('$variants$')
     if variants.IsValid():
-        # Modern niche-optimized Option
-        discr = value.GetChildMemberWithName('$discr$')
-        if discr.IsValid():
-            discr_val = discr.GetValueAsUnsigned()
-            if discr_val == 0:
-                return None
-    
-    # Try to get Some value
-    for i in range(value.GetNumChildren()):
+        # Check $variant$1 for Some (discriminant = 1)
+        variant1 = variants.GetChildMemberWithName('$variant$1')
+        if variant1.IsValid():
+            discr = variant1.GetChildMemberWithName('$discr$')
+            if discr.IsValid() and discr.GetValueAsUnsigned(0) == 1:
+                # It's Some - extract the inner value
+                val_child = variant1.GetChildMemberWithName('value')
+                if val_child.IsValid():
+                    # The actual value is in __0 or first child
+                    inner = val_child.GetChildMemberWithName('__0')
+                    if not inner.IsValid():
+                        inner = val_child.GetChildAtIndex(0)
+                    if inner.IsValid():
+                        inner_value = value_to_json(inner, visited, depth+1)
+                        return {
+                            "__ferrumpy_kind__": "option",
+                            "__variant__": "Some",
+                            "__inner__": inner_value
+                        }
+
+        # Check $variant$0 for None (discriminant = 0)
+        variant0 = variants.GetChildMemberWithName('$variant$0')
+        if variant0.IsValid():
+            discr = variant0.GetChildMemberWithName('$discr$')
+            if discr.IsValid() and discr.GetValueAsUnsigned(1) == 0:
+                return {
+                    "__ferrumpy_kind__": "option",
+                    "__variant__": "None",
+                    "__inner__": None
+                }
+
+    # Fallback: check for direct child that looks like inner value
+    num_children = value.GetNumChildren()
+    for i in range(num_children):
         child = value.GetChildAtIndex(i)
         name = child.GetName() or ""
-        if 'Some' in name or '__0' in name:
-            return value_to_json(child, visited, depth+1)
-    
-    # Fallback: check if it looks like None
-    summary = value.GetSummary()
-    if summary and 'None' in summary:
-        return None
-    
-    return {"__option__": "unknown"}
+        # Skip internal LLDB fields
+        if name.startswith('$'):
+            continue
+        if 'Some' in name or name == '__0' or name == '0':
+            inner_value = value_to_json(child, visited, depth+1)
+            return {
+                "__ferrumpy_kind__": "option",
+                "__variant__": "Some",
+                "__inner__": inner_value
+            }
 
+    # Last resort: use summary
+    summary = value.GetSummary()
+    if summary:
+        if 'Some' in summary:
+            # Try to parse value from summary like "Some(42)"
+            return {
+                "__ferrumpy_kind__": "option",
+                "__variant__": "Some",
+                "__summary__": summary
+            }
+        if 'None' in summary:
+            return {
+                "__ferrumpy_kind__": "option",
+                "__variant__": "None",
+                "__inner__": None
+            }
+
+    # Unknown
+    return {
+        "__ferrumpy_kind__": "option",
+        "__variant__": "unknown",
+        "__summary__": summary or ""
+    }
 
 def _serialize_result(value, visited: Set[int], depth: int = 0) -> Dict[str, Any]:
-    """Serialize a Result<T, E>."""
+    """Serialize a Result<T, E> with __ferrumpy_kind__ metadata."""
     type_name = value.GetType().GetName()
-    
+
     if type_name.endswith('::Ok'):
         inner = value.GetChildAtIndex(0)
-        return {"Ok": value_to_json(inner, visited, depth+1) if inner.IsValid() else None}
-    
+        inner_value = value_to_json(inner, visited, depth+1) if inner.IsValid() else None
+        return {
+            "__ferrumpy_kind__": "result",
+            "__variant__": "Ok",
+            "__inner__": inner_value
+        }
+
     if type_name.endswith('::Err'):
         inner = value.GetChildAtIndex(0)
-        return {"Err": value_to_json(inner, visited, depth+1) if inner.IsValid() else None}
-    
+        inner_value = value_to_json(inner, visited, depth+1) if inner.IsValid() else None
+        return {
+            "__ferrumpy_kind__": "result",
+            "__variant__": "Err",
+            "__inner__": inner_value
+        }
+
     # Try to determine variant from structure
     summary = value.GetSummary()
     if summary:
         if 'Ok' in summary:
-            return {"Ok": summary}
+            return {
+                "__ferrumpy_kind__": "result",
+                "__variant__": "Ok",
+                "__summary__": summary
+            }
         if 'Err' in summary:
-            return {"Err": summary}
-    
-    return {"__result__": "unknown"}
+            return {
+                "__ferrumpy_kind__": "result",
+                "__variant__": "Err",
+                "__summary__": summary
+            }
+
+    return {
+        "__ferrumpy_kind__": "result",
+        "__variant__": "unknown",
+        "__summary__": summary or ""
+    }
 
 
 def _serialize_smart_pointer(value, visited: Set[int], depth: int = 0) -> Any:
-    """Serialize Box/Arc/Rc by dereferencing."""
+    """Serialize Box/Arc/Rc with __ferrumpy_kind__ metadata."""
+    type_name = value.GetType().GetName()
+
+    # Determine pointer kind
+    if 'Arc<' in type_name:
+        kind = "arc"
+    elif 'Rc<' in type_name:
+        kind = "rc"
+    elif 'Box<' in type_name:
+        kind = "box"
+    else:
+        kind = "ptr"
+
     # Try to get the inner value
+    inner_value = None
+
+    # Common field for Arc/Rc in some LLDB versions
     ptr = value.GetChildMemberWithName('ptr')
     if ptr.IsValid():
         pointer = ptr.GetChildMemberWithName('pointer')
         if pointer.IsValid():
             inner = pointer.Dereference()
             if inner.IsValid():
-                data = inner.GetChildMemberWithName('data')
-                if data.IsValid():
-                    return value_to_json(data, visited, depth+1)
-                return value_to_json(inner, visited, depth+1)
-    
+                # Some versions have 'data' or 'value' field
+                for field_name in ['data', 'value']:
+                    data = inner.GetChildMemberWithName(field_name)
+                    if data.IsValid():
+                        inner_value = value_to_json(data, visited, depth+1)
+                        break
+
+                if inner_value is None:
+                    # If it has 'strong' and 'weak' fields, it's the control block
+                    # The value might be in a 'value' field alongside them
+                    inner_value = value_to_json(inner, visited, depth+1)
+
+    # Proactive check for 'value' field if it's a known smart pointer type
+    if inner_value is None or (isinstance(inner_value, dict) and 'strong' in inner_value):
+        # Look for 'value' child directly
+        val_child = value.GetChildMemberWithName('value')
+        if not val_child.IsValid():
+            # Try to find any child named 'value' or 'data'
+            for i in range(value.GetNumChildren()):
+                child = value.GetChildAtIndex(i)
+                if child.GetName() in ['value', 'data']:
+                    val_child = child
+                    break
+
+        if val_child.IsValid():
+            # If the child itself is the control block (contains strong/weak)
+            # we need to go deeper
+            if val_child.GetChildMemberWithName('strong').IsValid():
+                real_val = val_child.GetChildMemberWithName('value')
+                if real_val.IsValid():
+                    inner_value = value_to_json(real_val, visited, depth+1)
+            else:
+                inner_value = value_to_json(val_child, visited, depth+1)
+
     # Fallback: try first child
-    if value.GetNumChildren() > 0:
+    if inner_value is None and value.GetNumChildren() > 0:
         child = value.GetChildAtIndex(0)
         deref = child.Dereference()
         if deref.IsValid():
-            return value_to_json(deref, visited, depth+1)
-    
-    return {"__ptr__": "opaque"}
+            inner_value = value_to_json(deref, visited, depth+1)
+        else:
+            # If dereference fails, maybe the child is the value (e.g. Box in some cases)
+            inner_value = value_to_json(child, visited, depth+1)
+
+    # Final check: if we still have 'strong'/'weak' in the result, it's failed to extract
+    if isinstance(inner_value, dict) and ('strong' in inner_value or 'weak' in inner_value):
+        # Try to extract 'value' from it if present
+        if 'value' in inner_value:
+            inner_value = inner_value['value']
+
+    return {
+        "__ferrumpy_kind__": kind,
+        "__inner__": inner_value
+    }
+
+
+def _serialize_hashmap(value, visited: Set[int], depth: int = 0) -> Dict[str, Any]:
+    """Serialize a HashMap using LLDB's GetSummary() which formats key-value pairs.
+
+    LLDB's summary for HashMap typically looks like: '{"key1": value1, "key2": value2}'
+    We try to parse this, falling back to a structured representation if parsing fails.
+    """
+    type_name = value.GetType().GetName()
+
+    # Try LLDB summary first - this often gives us formatted HashMap contents
+    summary = value.GetSummary()
+    if summary:
+        # Try to parse the summary as JSON-like data
+        # LLDB summary format: size=N { "key1": value1, "key2": value2 }
+        # Or sometimes just: { "key1": value1, ... }
+        import re
+
+        # Extract the {...} part
+        brace_match = re.search(r'\{[^}]*\}', summary)
+        if brace_match:
+            try:
+                # Try to parse as JSON object
+                map_str = brace_match.group(0)
+                parsed = json.loads(map_str)
+                if isinstance(parsed, dict):
+                    return parsed  # Return the parsed dict directly
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        # If summary exists but can't parse, store as metadata
+        return {
+            "__ferrumpy_kind__": "hashmap",
+            "__summary__": summary,
+            "__type__": normalize_type_name(type_name)
+        }
+
+    # Fallback: try to iterate children (may work for some LLDB versions)
+    result = {}
+    num_children = value.GetNumChildren()
+    if num_children > 0:
+        for i in range(min(num_children, 100)):  # Limit for performance
+            child = value.GetChildAtIndex(i)
+            if child.IsValid():
+                # Try to get key and value
+                key_child = child.GetChildMemberWithName('0')  # Some LLDB versions use numbered children
+                val_child = child.GetChildMemberWithName('1')
+                if key_child.IsValid() and val_child.IsValid():
+                    key = value_to_json(key_child, visited, depth+1)
+                    val = value_to_json(val_child, visited, depth+1)
+                    if isinstance(key, str):
+                        result[key] = val
+                    else:
+                        # Non-string keys: use array of pairs format
+                        if "__pairs__" not in result:
+                            result = {"__ferrumpy_kind__": "hashmap", "__pairs__": []}
+                        result["__pairs__"].append([key, val])
+
+        if result:
+            return result
+
+    # Final fallback: return empty with type info
+    return {
+        "__ferrumpy_kind__": "hashmap",
+        "__type__": normalize_type_name(type_name),
+        "__error__": "Could not extract HashMap contents"
+    }
+
+def _serialize_tuple(value, visited: Set[int], depth: int = 0) -> Dict[str, Any]:
+    """Serialize a tuple with __ferrumpy_kind__ metadata."""
+    elements = []
+    type_name = value.GetType().GetName()
+
+    num_children = value.GetNumChildren()
+    for i in range(num_children):
+        child = value.GetChildAtIndex(i)
+        if child.IsValid():
+            elements.append(value_to_json(child, visited, depth+1))
+        else:
+            elements.append(None)
+
+    return {
+        "__ferrumpy_kind__": "tuple",
+        "__elements__": elements,
+        "__type__": type_name
+    }
+
+
+def _serialize_fixed_array(value, visited: Set[int], depth: int = 0) -> Dict[str, Any]:
+    """Serialize a fixed-size array with __ferrumpy_kind__ metadata."""
+    elements = []
+    type_name = value.GetType().GetName()
+
+    num_children = value.GetNumChildren()
+    for i in range(min(num_children, 100)):  # Limit for performance
+        child = value.GetChildAtIndex(i)
+        if child.IsValid():
+            elements.append(value_to_json(child, visited, depth+1))
+        else:
+            elements.append(None)
+
+    return {
+        "__ferrumpy_kind__": "array",
+        "__elements__": elements,
+        "__type__": type_name,
+        "__length__": num_children
+    }
+
+
+def _serialize_enum(value, visited: Set[int], depth: int = 0) -> Optional[Dict[str, Any]]:
+    """Serialize a user-defined enum with __ferrumpy_kind__: enum metadata.
+
+    LLDB represents Rust enums with a $variants$ child containing:
+    - $variant$0, $variant$1, etc. for each variant
+    - Each variant has $discr$ (discriminant) and 'value' child
+    - The discriminant is encoded as 2^63 + variant_index
+
+    Returns None if the value doesn't appear to be an enum.
+    """
+    type_name = value.GetType().GetName()
+
+    # Extract base enum type from type name
+    # e.g., "rust_sample::types::Status" -> "Status"
+    parts = type_name.split('::')
+    enum_type = parts[-1] if parts else type_name
+
+    # Default values
+    variant = "Unknown"
+    payload = None
+
+    # Try GetValue() or GetSummary() first - often gives us the variant directly for C-style enums
+    summary = value.GetSummary() or value.GetValue()
+    if summary:
+        # Parse summary like "Active", "Pending(7)", "Inactive { reason: ... }"
+        summary = summary.strip()
+        if summary:
+            # Check if summary looks like a variant name (single word or leads with word)
+            paren_pos = summary.find('(')
+            brace_pos = summary.find('{')
+
+            potential_var = ""
+            if paren_pos > 0:
+                potential_var = summary[:paren_pos].strip()
+            elif brace_pos > 0:
+                potential_var = summary[:brace_pos].strip()
+            else:
+                potential_var = summary
+
+            # Simple heuristic: variant names are alphanumeric and capitalized
+            if potential_var and potential_var[0].isupper() and ' ' not in potential_var:
+                variant = potential_var
+
+    # Check for $variants$ structure to get active variant and payload
+    variants = value.GetChildMemberWithName('$variants$')
+    if variants.IsValid():
+        # Find the active variant using discriminant
+        # LLDB discriminant is encoded as 2^63 + variant_index
+        active_index = None
+
+        # Check any variant's $discr$ to get the active index
+        for i in range(variants.GetNumChildren()):
+            var_child = variants.GetChildAtIndex(i)
+            if not var_child.IsValid():
+                continue
+
+            var_name = var_child.GetName() or ""
+            if not var_name.startswith('$variant$'):
+                continue
+
+            # Check discriminant
+            discr = var_child.GetChildMemberWithName('$discr$')
+            if discr.IsValid():
+                discr_val = discr.GetValueAsUnsigned(0)
+                # Extract variant index: discr_val & 0x7FFFFFFFFFFFFFFF
+                active_index = discr_val & 0x7FFFFFFFFFFFFFFF
+                break
+
+        # Now get the variant at that index
+        if active_index is not None:
+            target_var = variants.GetChildMemberWithName(f'$variant${active_index}')
+            # Fallback: if $variant$N doesn't exist, try $variant$ (LLDB uses this for last variant)
+            if not target_var.IsValid():
+                target_var = variants.GetChildMemberWithName('$variant$')
+            if target_var.IsValid():
+                val_child = target_var.GetChildMemberWithName('value')
+                if val_child.IsValid():
+                    # Extract variant name from value's type if we don't have it
+                    if variant == "Unknown":
+                        val_type = val_child.GetType().GetName()
+                        if '::' in val_type:
+                            val_parts = val_type.split('::')
+                            for part in reversed(val_parts):
+                                clean_part = part.split(':')[0].split('<')[0].strip()
+                                if clean_part and clean_part[0].isupper() and clean_part != enum_type:
+                                    variant = clean_part
+                                    break
+
+                    # Extract payload from value's children
+                    num_val_children = val_child.GetNumChildren()
+                    if num_val_children > 0:
+                        first = val_child.GetChildAtIndex(0)
+                        if first.IsValid():
+                            first_name = first.GetName() or ""
+                            # Tuple variant: __0, __1, etc.
+                            if first_name.startswith('__') or first_name.isdigit():
+                                if num_val_children == 1:
+                                    payload = value_to_json(first, visited, depth+1)
+                                else:
+                                    payload = []
+                                    for j in range(num_val_children):
+                                        ch = val_child.GetChildAtIndex(j)
+                                        if ch.IsValid():
+                                            payload.append(value_to_json(ch, visited, depth+1))
+                            elif not first_name.startswith('$'):
+                                # Struct variant: named fields
+                                payload = {}
+                                for j in range(num_val_children):
+                                    ch = val_child.GetChildAtIndex(j)
+                                    if ch.IsValid():
+                                        ch_name = ch.GetName() or f"_{j}"
+                                        if not ch_name.startswith('$'):
+                                            payload[ch_name] = value_to_json(ch, visited, depth+1)
+
+    # Fallback: try to get variant from type name if it looks like Enum::Variant
+    if variant == "Unknown" and '::' in type_name:
+        # Check if it looks like Namespace::Enum::Variant
+        if len(parts) >= 2:
+            last = parts[-1]
+            second_last = parts[-2]
+            if last and last[0].isupper() and second_last and second_last[0].isupper():
+                variant = last
+                enum_type = second_last
+
+    # If we STILL have "Unknown" and NO variants child, this is likely NOT an enum
+    if variant == "Unknown" and not variants.IsValid():
+        return None
+
+    return {
+        "__ferrumpy_kind__": "enum",
+        "__enum_type__": enum_type,
+        "__variant__": variant,
+        "__payload__": payload
+    }
 
 
 def _serialize_struct(value, visited: Set[int], depth: int = 0) -> Dict[str, Any]:
     """Serialize a struct as a dictionary of fields."""
     result = {}
-    
+
     num_children = value.GetNumChildren()
     for i in range(min(num_children, 50)):  # Limit fields
         child = value.GetChildAtIndex(i)
         if not child.IsValid():
             continue
-        
+
         name = child.GetName()
         if name is None:
             name = f"_{i}"
-        
+
         # Skip internal fields
         if name.startswith('$'):
             continue
-        
+
         try:
             result[name] = value_to_json(child, visited, depth+1)
         except Exception as e:
             result[name] = {"__error__": str(e)}
-    
+
     if num_children > 50:
         result["__truncated__"] = f"{num_children - 50} more fields"
-    
+
     return result
 
 
@@ -654,7 +1207,7 @@ if __name__ == "__main__":
         ("rust_sample::User", "User"),
         ("my_crate::models::Config", "Config"),
     ]
-    
+
     for input_type, expected in tests:
         result = normalize_type_name(input_type)
         status = "✓" if result == expected else "✗"

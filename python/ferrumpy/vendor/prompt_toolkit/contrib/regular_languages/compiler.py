@@ -42,8 +42,10 @@ Partial matches are possible::
 from __future__ import annotations
 
 import re
-from typing import Callable, Dict, Iterable, Iterator, Pattern, TypeVar, overload
-from typing import Match as RegexMatch
+from collections.abc import Iterable, Iterator
+from re import Match as RegexMatch
+from re import Pattern
+from typing import Callable, Dict, TypeVar, overload
 
 from .regex_parser import (
     AnyNode,

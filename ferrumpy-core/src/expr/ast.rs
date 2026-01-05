@@ -7,31 +7,25 @@ use serde::{Deserialize, Serialize};
 pub enum Expr {
     /// Variable or path: a, a.b, a[0].c
     Path(Vec<PathSegment>),
-    
+
     /// Binary operation: a + b
     Binary {
         left: Box<Expr>,
         op: BinOp,
         right: Box<Expr>,
     },
-    
+
     /// Unary operation: -a, !b, *ptr
-    Unary {
-        op: UnaryOp,
-        expr: Box<Expr>,
-    },
-    
+    Unary { op: UnaryOp, expr: Box<Expr> },
+
     /// Literal: 42, 3.14, true, "hello"
     Literal(Literal),
-    
+
     /// Parenthesized: (a + b)
     Paren(Box<Expr>),
-    
+
     /// Type cast: a as i64
-    Cast {
-        expr: Box<Expr>,
-        ty: String,
-    },
+    Cast { expr: Box<Expr>, ty: String },
 }
 
 /// Path segment
@@ -53,24 +47,24 @@ pub enum PathSegment {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum BinOp {
     // Arithmetic
-    Add,    // +
-    Sub,    // -
-    Mul,    // *
-    Div,    // /
-    Rem,    // %
-    
+    Add, // +
+    Sub, // -
+    Mul, // *
+    Div, // /
+    Rem, // %
+
     // Comparison
-    Eq,     // ==
-    Ne,     // !=
-    Lt,     // <
-    Le,     // <=
-    Gt,     // >
-    Ge,     // >=
-    
+    Eq, // ==
+    Ne, // !=
+    Lt, // <
+    Le, // <=
+    Gt, // >
+    Ge, // >=
+
     // Logical
-    And,    // &&
-    Or,     // ||
-    
+    And, // &&
+    Or,  // ||
+
     // Bitwise
     BitAnd, // &
     BitOr,  // |
@@ -107,10 +101,10 @@ impl BinOp {
 /// Unary operators
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum UnaryOp {
-    Neg,    // -
-    Not,    // !
-    Deref,  // *
-    Ref,    // &
+    Neg,   // -
+    Not,   // !
+    Deref, // *
+    Ref,   // &
 }
 
 impl UnaryOp {

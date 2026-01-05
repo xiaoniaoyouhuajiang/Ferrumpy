@@ -32,8 +32,9 @@ import selectors
 import sys
 import threading
 from asyncio import AbstractEventLoop, get_running_loop
+from collections.abc import Mapping
 from selectors import BaseSelector, SelectorKey
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable
 
 __all__ = [
     "new_eventloop_with_inputhook",

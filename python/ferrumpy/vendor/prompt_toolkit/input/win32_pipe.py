@@ -4,10 +4,11 @@ import sys
 
 assert sys.platform == "win32"
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from ctypes import windll
 from ctypes.wintypes import HANDLE
-from typing import Callable, ContextManager, Iterator
+from typing import Callable, ContextManager
 
 from prompt_toolkit.eventloop.win32 import create_win32_event
 

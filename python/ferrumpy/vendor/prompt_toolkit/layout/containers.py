@@ -6,9 +6,10 @@ Container for the layout.
 from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
+from collections.abc import Sequence
 from enum import Enum
 from functools import partial
-from typing import TYPE_CHECKING, Callable, Sequence, Union, cast
+from typing import TYPE_CHECKING, Callable, Union, cast
 
 from prompt_toolkit.application.current import get_app
 from prompt_toolkit.cache import SimpleCache
@@ -52,9 +53,8 @@ from .screen import _CHAR_CACHE, Screen, WritePosition
 from .utils import explode_text_fragments
 
 if TYPE_CHECKING:
-    from typing_extensions import Protocol, TypeGuard
-
     from prompt_toolkit.key_binding.key_bindings import NotImplementedOrNone
+    from typing_extensions import Protocol, TypeGuard
 
 
 __all__ = [

@@ -28,10 +28,11 @@ Example::
 from __future__ import annotations
 
 from asyncio import get_running_loop
+from collections.abc import Iterator
 from contextlib import contextmanager
 from enum import Enum
 from functools import partial
-from typing import TYPE_CHECKING, Callable, Generic, Iterator, TypeVar, Union, cast
+from typing import TYPE_CHECKING, Callable, Generic, TypeVar, Union, cast
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.application.current import get_app

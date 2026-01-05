@@ -2,7 +2,7 @@
 //!
 //! Manages an evcxr evaluation context with captured debug state.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use crossbeam_channel::Receiver;
 use evcxr::{CommandContext, Error as EvcxrError, EvalContext};
 use std::path::Path;
@@ -336,9 +336,20 @@ impl ReplSession {
             .add_dep_silent("serde_json", r#""1""#)
             .map_err(|e| anyhow::anyhow!("Failed to add serde_json dep: {:?}", e))?;
 
-        // Step 2: Parse the JSON snapshot to extract companion lib path
-        let snapshot: serde_json::Value =
-            serde_json::from_str(json_data).context("Failed to parse snapshot JSON")?;
+        // Step 2: Parse snapshot JSON
+        let snapshot: serde_json::Value = serde_json::from_str(json_data)?;
+
+        // ========== ITEM-LEVEL EXPORT PATH ==========
+        if std::env::var("FERRUMPY_DEBUG").is_ok() {
+            eprintln!("[DEBUG] Using item-level snapshot export");
+        }
+
+        let vars = self.extract_variables(&snapshot)?;
+        if vars.is_empty() {
+            return Ok("Snapshot loaded (no variables)".to_string());
+        }
+
+        let mut all_code = String::new();
 
         // Re-add companion library if it exists in the snapshot
         if let Some(lib_path) = snapshot.get("lib_path").and_then(|v| v.as_str()) {
@@ -346,147 +357,44 @@ impl ReplSession {
                 .get("lib_name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("ferrumpy_snapshot");
-
-            eprintln!(
-                "[DEBUG] Re-adding companion library: {} at {}",
-                lib_name, lib_path
-            );
             self.add_path_dep_silent(lib_name, Path::new(lib_path))?;
         }
 
-        // Get types map for type-aware code generation
-        let types_map = snapshot.get("types").and_then(|v| v.as_object());
-
-        // Check if item-level export is enabled (opt-in: default off for backward compatibility)
-        // Set FERRUMPY_SNAPSHOT_ITEMS=1 to enable item-level export (function access pattern)
-        let use_items = std::env::var("FERRUMPY_SNAPSHOT_ITEMS")
-            .map(|v| v == "1")
-            .unwrap_or(false); // Default: legacy let-binding for backward compatibility
-
-        if use_items {
-            // ========== ITEM-LEVEL EXPORT PATH ==========
-            eprintln!("[DEBUG] Using item-level snapshot export");
-
-            let vars = self.extract_variables(&snapshot)?;
-            if vars.is_empty() {
-                return Ok("Snapshot loaded (no variables)".to_string());
-            }
-
-            let mut all_code = String::new();
-            if let Some(lib_use) = snapshot.get("lib_use_stmt").and_then(|v| v.as_str()) {
-                all_code.push_str(lib_use);
-                all_code.push('\n');
-            }
-            all_code.push_str("use serde::{Serialize, Deserialize};\n");
-            let module_code = self.generate_snapshot_module(&vars)?;
-            all_code.push_str(&module_code);
-            all_code.push('\n');
-            all_code.push_str("use ferrumpy_vars::*;\n");
-
-            self.eval(&all_code)?;
-            self.initialized = true;
-
-            let sample_names: Vec<&str> = vars.iter().take(5).map(|(n, _, _)| n.as_str()).collect();
-            return Ok(format!(
-                "Snapshot loaded with {} items. Access: {}{}",
-                vars.len(),
-                sample_names
-                    .iter()
-                    .map(|n| format!("{}()", n))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                if vars.len() > 5 { ", ..." } else { "" }
-            ));
-        }
-
-        // ========== FALLBACK: Let-Binding Path ==========
-        eprintln!("[DEBUG] Using legacy let-binding snapshot export");
-
-        // Step 3: Build all code in one batch
-        let mut all_code = String::new();
-
-        // Add companion lib use statement if present (from Python layer)
         if let Some(lib_use) = snapshot.get("lib_use_stmt").and_then(|v| v.as_str()) {
             all_code.push_str(lib_use);
             all_code.push('\n');
         }
-
-        // Add standard library imports for common types
-        all_code.push_str("use std::sync::Arc;\n");
-        all_code.push_str("use std::rc::Rc;\n");
-        all_code.push_str("use std::collections::HashMap;\n");
-
-        // Add serde imports (still needed for user types)
         all_code.push_str("use serde::{Serialize, Deserialize};\n");
+        let module_code = self.generate_snapshot_module(&vars)?;
+        all_code.push_str(&module_code);
+        all_code.push('\n');
+        all_code.push_str("use ferrumpy_vars::*;\n");
 
-        // Add variable declarations with TYPE-AWARE code generation
-        let mut loaded_vars: Vec<String> = Vec::new();
-        if let Some(variables) = snapshot.get("variables") {
-            if let Some(vars) = variables.as_object() {
-                for (name, value) in vars {
-                    // Get the type hint for this variable
-                    let type_hint = types_map
-                        .and_then(|m| m.get(name))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("serde_json::Value");
+        // Add the restore! helper macro for user-assisted type restoration
+        // This allows users to convert serde_json::Value back to specific types
+        let restore_macro = r#"
+macro_rules! restore {
+    ($var:ident, $type:ty) => {
+        serde_json::from_value::<$type>($var().clone()).unwrap()
+    };
+}
+"#;
+        all_code.push_str(restore_macro);
 
-                    // Determine the actual type to use
-                    // For unsupported types, fallback to serde_json::Value (don't skip!)
-                    let mut actual_type = if self.is_supported_type(type_hint) {
-                        // Transform type hint: clean up and normalize
-                        self.normalize_rust_type(type_hint)
-                    } else {
-                        // Fallback: use generic JSON value
-                        "serde_json::Value".to_string()
-                    };
-
-                    // Check if the serialized value is valid for the type
-                    // E.g., empty strings or error markers like __result__ can't be deserialized
-                    if !self.is_valid_for_deserialization(value, &actual_type) {
-                        actual_type = "serde_json::Value".to_string();
-                    }
-
-                    let code = self.generate_typed_var_code(name, value, &actual_type)?;
-                    all_code.push_str(&code);
-                    all_code.push('\n');
-                    loaded_vars.push(format!("{}: {}", name, actual_type));
-                }
-            }
-        }
-
-        // Step 4: Single compilation with all code
-        if !all_code.is_empty() {
-            self.eval(&all_code)?;
-        }
-
+        self.eval(&all_code)?;
         self.initialized = true;
 
-        // Return list of loaded variables
-        if loaded_vars.is_empty() {
-            Ok("Snapshot loaded (no variables loaded - all types filtered)".to_string())
-        } else {
-            Ok(format!(
-                "Snapshot loaded with {} variables: {}",
-                loaded_vars.len(),
-                loaded_vars.join(", ")
-            ))
-        }
-    }
-
-    /// Generate type-aware variable declaration code using let bindings
-    /// Note: Static variables don't persist across evcxr eval calls, so we use let bindings
-    /// Functions defined in REPL cannot access these variables - use closure captures instead
-    fn generate_typed_var_code(
-        &self,
-        name: &str,
-        value: &serde_json::Value,
-        type_hint: &str,
-    ) -> Result<String> {
-        // Generate the value initialization expression
-        let init_expr = self.generate_value_init_expr(value, type_hint)?;
-
-        // Generate: let name: Type = init_expr;
-        Ok(format!("let {}: {} = {};", name, type_hint, init_expr))
+        let sample_names: Vec<&str> = vars.iter().take(5).map(|(n, _, _)| n.as_str()).collect();
+        Ok(format!(
+            "Snapshot loaded with {} items. Access: {}{}",
+            vars.len(),
+            sample_names
+                .iter()
+                .map(|n| format!("{}()", n))
+                .collect::<Vec<_>>()
+                .join(", "),
+            if vars.len() > 5 { ", ..." } else { "" }
+        ))
     }
 
     /// Generate initialization expression for a value (for let bindings)
@@ -495,6 +403,31 @@ impl ReplSession {
         value: &serde_json::Value,
         type_hint: &str,
     ) -> Result<String> {
+        // Check for __ferrumpy_kind__ metadata (special type handling)
+        // BUT: Skip if type_hint is serde_json::Value (fallback case for unsupported types)
+        if type_hint != "serde_json::Value" {
+            if let Some(kind) = value.get("__ferrumpy_kind__").and_then(|v| v.as_str()) {
+                return match kind {
+                    "option" => self.generate_option_code(value, type_hint),
+                    "result" => self.generate_result_code(value, type_hint),
+                    "tuple" => self.generate_tuple_code(value, type_hint),
+                    "array" => self.generate_array_code(value, type_hint),
+                    "arc" => self.generate_arc_code(value, type_hint),
+                    "rc" => self.generate_rc_code(value, type_hint),
+                    "box" => self.generate_box_code(value, type_hint),
+                    "enum" => self.generate_enum_code(value, type_hint),
+                    _ => {
+                        // Unknown kind, fall through to default handling
+                        let json_str = serde_json::to_string(value)?;
+                        Ok(format!(
+                            "serde_json::from_str::<serde_json::Value>(r#\"{}\"#).unwrap()",
+                            json_str
+                        ))
+                    }
+                };
+            }
+        }
+
         // Handle primitive types with literal generation
         match type_hint {
             // Integer types - generate literal
@@ -539,7 +472,7 @@ impl ReplSession {
                 }
             }
 
-            // Option types
+            // Option types (legacy path - now handled by __ferrumpy_kind__)
             t if t.starts_with("Option<") => {
                 let inner_type = &t[7..t.len() - 1];
                 if value.is_null() {
@@ -566,6 +499,307 @@ impl ReplSession {
                 "serde_json::from_str::<serde_json::Value>(r#\"{}\"#).unwrap()",
                 json_str
             ))
+        }
+    }
+
+    /// Generate code for Option<T> from __ferrumpy_kind__ metadata
+    fn generate_option_code(&self, value: &serde_json::Value, type_hint: &str) -> Result<String> {
+        let variant = value
+            .get("__variant__")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        match variant {
+            "None" => Ok("None".to_string()),
+            "Some" => {
+                // Extract inner type from Option<T>
+                let inner_type = if type_hint.starts_with("Option<") && type_hint.ends_with(">") {
+                    &type_hint[7..type_hint.len() - 1]
+                } else {
+                    "serde_json::Value"
+                };
+
+                if let Some(inner) = value.get("__inner__") {
+                    let inner_code = self.generate_value_init_expr(inner, inner_type)?;
+                    Ok(format!("Some({})", inner_code))
+                } else {
+                    Ok("None".to_string())
+                }
+            }
+            _ => Ok("None".to_string()), // Unknown variant, default to None
+        }
+    }
+
+    /// Generate code for Result<T, E> from __ferrumpy_kind__ metadata
+    fn generate_result_code(&self, value: &serde_json::Value, type_hint: &str) -> Result<String> {
+        let variant = value
+            .get("__variant__")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        // Parse Result<T, E> to extract T and E types
+        let (ok_type, err_type) = self.parse_result_types(type_hint);
+
+        match variant {
+            "Ok" => {
+                if let Some(inner) = value.get("__inner__") {
+                    let inner_code = self.generate_value_init_expr(inner, &ok_type)?;
+                    Ok(format!("Ok({})", inner_code))
+                } else {
+                    Ok("Ok(())".to_string())
+                }
+            }
+            "Err" => {
+                if let Some(inner) = value.get("__inner__") {
+                    let inner_code = self.generate_value_init_expr(inner, &err_type)?;
+                    Ok(format!("Err({})", inner_code))
+                } else {
+                    Ok("Err(\"unknown\".to_string())".to_string())
+                }
+            }
+            _ => Ok("Err(\"unknown variant\".to_string())".to_string()),
+        }
+    }
+
+    /// Parse Result<T, E> to extract T and E
+    fn parse_result_types(&self, type_hint: &str) -> (String, String) {
+        if !type_hint.starts_with("Result<") || !type_hint.ends_with(">") {
+            return ("serde_json::Value".to_string(), "String".to_string());
+        }
+
+        let inner = &type_hint[7..type_hint.len() - 1];
+        // Simple split on ", " - may not work for nested generics
+        if let Some(comma_pos) = inner.find(", ") {
+            let ok_type = inner[..comma_pos].to_string();
+            let err_type = inner[comma_pos + 2..].to_string();
+            (ok_type, err_type)
+        } else {
+            (inner.to_string(), "String".to_string())
+        }
+    }
+
+    /// Generate code for tuple from __ferrumpy_kind__ metadata
+    fn generate_tuple_code(&self, value: &serde_json::Value, type_hint: &str) -> Result<String> {
+        let elements = value.get("__elements__").and_then(|v| v.as_array());
+
+        if let Some(elems) = elements {
+            // Parse tuple types from type_hint like "(i32, String, f64)"
+            let elem_types = self.parse_tuple_types(type_hint);
+
+            let mut parts = Vec::new();
+            for (i, elem) in elems.iter().enumerate() {
+                let elem_type = elem_types
+                    .get(i)
+                    .map(|s| s.as_str())
+                    .unwrap_or("serde_json::Value");
+                let part = self.generate_value_init_expr(elem, elem_type)?;
+                parts.push(part);
+            }
+
+            Ok(format!("({})", parts.join(", ")))
+        } else {
+            Ok("()".to_string())
+        }
+    }
+
+    /// Parse tuple type "(T1, T2, T3)" into vec of types
+    fn parse_tuple_types(&self, type_hint: &str) -> Vec<String> {
+        if !type_hint.starts_with("(") || !type_hint.ends_with(")") {
+            return vec![];
+        }
+
+        let inner = &type_hint[1..type_hint.len() - 1];
+        // Simple split - may not work for nested generics with commas
+        inner.split(", ").map(|s| s.to_string()).collect()
+    }
+
+    /// Generate code for fixed array from __ferrumpy_kind__ metadata
+    fn generate_array_code(&self, value: &serde_json::Value, type_hint: &str) -> Result<String> {
+        let elements = value.get("__elements__").and_then(|v| v.as_array());
+
+        if let Some(elems) = elements {
+            // Parse array type like "[i32; 5]" to get element type
+            let elem_type = self.parse_array_elem_type(type_hint);
+
+            let mut parts = Vec::new();
+            for elem in elems {
+                let part = self.generate_value_init_expr(elem, &elem_type)?;
+                parts.push(part);
+            }
+
+            Ok(format!("[{}]", parts.join(", ")))
+        } else {
+            Ok("[]".to_string())
+        }
+    }
+
+    /// Parse array type "[T; N]" to get element type T
+    fn parse_array_elem_type(&self, type_hint: &str) -> String {
+        // Handle "[i32; 5]" format
+        if type_hint.starts_with("[") && type_hint.contains(";") {
+            if let Some(semi_pos) = type_hint.find(';') {
+                return type_hint[1..semi_pos].trim().to_string();
+            }
+        }
+        // Handle "int[5]" C-style format
+        if let Some(bracket_pos) = type_hint.find('[') {
+            return type_hint[..bracket_pos].to_string();
+        }
+        "serde_json::Value".to_string()
+    }
+
+    /// Generate code for Arc<T> from __ferrumpy_kind__ metadata
+    fn generate_arc_code(&self, value: &serde_json::Value, type_hint: &str) -> Result<String> {
+        let inner_type = if type_hint.starts_with("Arc<") && type_hint.ends_with(">") {
+            &type_hint[4..type_hint.len() - 1]
+        } else {
+            "serde_json::Value"
+        };
+
+        if let Some(inner) = value.get("__inner__") {
+            let inner_code = self.generate_value_init_expr(inner, inner_type)?;
+            Ok(format!("std::sync::Arc::new({})", inner_code))
+        } else {
+            // Fallback to serde_json::Value
+            let json_str = serde_json::to_string(value)?;
+            Ok(format!(
+                "std::sync::Arc::new(serde_json::from_str::<serde_json::Value>(r#\"{}\"#).unwrap())",
+                json_str
+            ))
+        }
+    }
+
+    /// Generate code for Rc<T> from __ferrumpy_kind__ metadata
+    fn generate_rc_code(&self, value: &serde_json::Value, type_hint: &str) -> Result<String> {
+        let inner_type = if type_hint.starts_with("Rc<") && type_hint.ends_with(">") {
+            &type_hint[3..type_hint.len() - 1]
+        } else {
+            "serde_json::Value"
+        };
+
+        if let Some(inner) = value.get("__inner__") {
+            let inner_code = self.generate_value_init_expr(inner, inner_type)?;
+            Ok(format!("std::rc::Rc::new({})", inner_code))
+        } else {
+            let json_str = serde_json::to_string(value)?;
+            Ok(format!(
+                "std::rc::Rc::new(serde_json::from_str::<serde_json::Value>(r#\"{}\"#).unwrap())",
+                json_str
+            ))
+        }
+    }
+
+    /// Generate code for Box<T> from __ferrumpy_kind__ metadata
+    fn generate_box_code(&self, value: &serde_json::Value, type_hint: &str) -> Result<String> {
+        let inner_type = if type_hint.starts_with("Box<") && type_hint.ends_with(">") {
+            &type_hint[4..type_hint.len() - 1]
+        } else {
+            "serde_json::Value"
+        };
+
+        if let Some(inner) = value.get("__inner__") {
+            let inner_code = self.generate_value_init_expr(inner, inner_type)?;
+            Ok(format!("Box::new({})", inner_code))
+        } else {
+            let json_str = serde_json::to_string(value)?;
+            Ok(format!(
+                "Box::new(serde_json::from_str::<serde_json::Value>(r#\"{}\"#).unwrap())",
+                json_str
+            ))
+        }
+    }
+
+    /// Generate code for user-defined enum from __ferrumpy_kind__: enum metadata
+    fn generate_enum_code(&self, value: &serde_json::Value, type_hint: &str) -> Result<String> {
+        let enum_type = value
+            .get("__enum_type__")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown");
+        let variant = value
+            .get("__variant__")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown");
+        let payload = value.get("__payload__");
+
+        // Use the type_hint if it includes the full path, otherwise construct from enum_type
+        let base_type = if type_hint.contains("::") {
+            // Remove the variant part if present in type_hint
+            if let Some(pos) = type_hint.rfind("::") {
+                let before_last = &type_hint[..pos];
+                if let Some(pos2) = before_last.rfind("::") {
+                    // Check if last part looks like a variant (capitalized)
+                    let last = &before_last[pos2 + 2..];
+                    if !last.is_empty() && last.chars().next().unwrap().is_uppercase() {
+                        before_last.to_string()
+                    } else {
+                        type_hint.to_string()
+                    }
+                } else {
+                    before_last.to_string()
+                }
+            } else {
+                type_hint.to_string()
+            }
+        } else {
+            enum_type.to_string()
+        };
+
+        // Handle different payload types
+        match payload {
+            None | Some(serde_json::Value::Null) => {
+                // Unit variant: Status::Active
+                Ok(format!("{}::{}", base_type, variant))
+            }
+            Some(serde_json::Value::Array(arr)) => {
+                // Tuple variant with multiple fields: Status::MultiValue(a, b, c)
+                let mut parts = Vec::new();
+                for elem in arr {
+                    let elem_code = self.primitive_to_code(elem);
+                    parts.push(elem_code);
+                }
+                Ok(format!("{}::{}({})", base_type, variant, parts.join(", ")))
+            }
+            Some(serde_json::Value::Object(obj)) => {
+                // Struct variant: Status::Inactive { reason: "..." }
+                let mut fields = Vec::new();
+                for (key, val) in obj {
+                    let val_code = self.primitive_to_code(val);
+                    fields.push(format!("{}: {}", key, val_code));
+                }
+                Ok(format!(
+                    "{}::{} {{ {} }}",
+                    base_type,
+                    variant,
+                    fields.join(", ")
+                ))
+            }
+            Some(single_val) => {
+                // Tuple variant with single field: Status::Pending(42)
+                let val_code = self.primitive_to_code(single_val);
+                Ok(format!("{}::{}({})", base_type, variant, val_code))
+            }
+        }
+    }
+
+    /// Convert a JSON value to a Rust literal for enum payloads
+    fn primitive_to_code(&self, val: &serde_json::Value) -> String {
+        match val {
+            serde_json::Value::Null => "()".to_string(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::String(s) => format!("{:?}.to_string()", s),
+            serde_json::Value::Array(arr) => {
+                let elements: Vec<String> = arr.iter().map(|e| self.primitive_to_code(e)).collect();
+                format!("vec![{}]", elements.join(", "))
+            }
+            serde_json::Value::Object(_) => {
+                // For complex objects, fall back to serde
+                let json_str = serde_json::to_string(val).unwrap_or_default();
+                format!(
+                    "serde_json::from_str::<serde_json::Value>(r#\"{}\"#).unwrap()",
+                    json_str
+                )
+            }
         }
     }
 
@@ -671,10 +905,9 @@ impl ReplSession {
             return false;
         }
 
-        // Skip smart pointers (Arc/Rc/Box don't implement Deserialize by default)
-        // These require special serde features to deserialize
+        // Skip smart pointers if they don't have a type hint or are malformed
         if type_hint.contains("Arc<") || type_hint.contains("Rc<") || type_hint.contains("Box<") {
-            return false;
+            return type_hint.contains('<') && type_hint.ends_with('>');
         }
 
         // Skip RefCell/Cell (complex internal state, can't deserialize)
@@ -687,10 +920,8 @@ impl ReplSession {
             return false;
         }
 
-        // Skip C-style arrays (int[5] format - should be normalized, but check)
-        if type_hint.contains("[") && type_hint.contains("]") && !type_hint.starts_with("Vec") {
-            return false;
-        }
+        // NOW SUPPORTED: C-style arrays and Rust arrays via __ferrumpy_kind__ metadata
+        // (Removed the array exclusion)
 
         // Skip tuples containing references (e.g., (&str, i32))
         if type_hint.starts_with("(") && type_hint.contains("&") {
@@ -724,6 +955,16 @@ impl ReplSession {
 
         // Check for error marker objects from Python serializer
         if let Some(obj) = value.as_object() {
+            // Allow __ferrumpy_kind__ metadata - but only if the type is actually supported
+            if obj.contains_key("__ferrumpy_kind__") {
+                // For types with references, we still can't deserialize
+                // is_supported_type already checked for this, so trust the type_hint
+                if type_hint.contains("&") {
+                    return false; // Contains reference, can't restore
+                }
+                return true;
+            }
+
             for key in obj.keys() {
                 // These markers indicate serialization failed in Python
                 if key.starts_with("__") && key.ends_with("__") {
@@ -732,6 +973,7 @@ impl ReplSession {
             }
 
             // For Result<T, E>, need {"Ok": ...} or {"Err": ...} format
+            // (Legacy path - now handled by __ferrumpy_kind__)
             if type_hint.starts_with("Result<") {
                 if !obj.contains_key("Ok") && !obj.contains_key("Err") {
                     return false;

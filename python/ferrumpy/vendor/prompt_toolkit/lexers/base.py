@@ -5,7 +5,8 @@ Base classes for prompt_toolkit lexers.
 from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
-from typing import Callable, Hashable
+from collections.abc import Hashable
+from typing import Callable
 
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text.base import StyleAndTextTuples

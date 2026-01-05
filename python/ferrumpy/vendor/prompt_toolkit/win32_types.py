@@ -28,13 +28,7 @@ class COORD(Structure):
     ]
 
     def __repr__(self) -> str:
-        return "{}(X={!r}, Y={!r}, type_x={!r}, type_y={!r})".format(
-            self.__class__.__name__,
-            self.X,
-            self.Y,
-            type(self.X),
-            type(self.Y),
-        )
+        return f"{self.__class__.__name__}(X={self.X!r}, Y={self.Y!r}, type_x={type(self.X)!r}, type_y={type(self.Y)!r})"
 
 
 class UNICODE_OR_ASCII(Union):
@@ -197,19 +191,7 @@ class CONSOLE_SCREEN_BUFFER_INFO(Structure):
     ]
 
     def __repr__(self) -> str:
-        return "CONSOLE_SCREEN_BUFFER_INFO({!r},{!r},{!r},{!r},{!r},{!r},{!r},{!r},{!r},{!r},{!r})".format(
-            self.dwSize.Y,
-            self.dwSize.X,
-            self.dwCursorPosition.Y,
-            self.dwCursorPosition.X,
-            self.wAttributes,
-            self.srWindow.Top,
-            self.srWindow.Left,
-            self.srWindow.Bottom,
-            self.srWindow.Right,
-            self.dwMaximumWindowSize.Y,
-            self.dwMaximumWindowSize.X,
-        )
+        return f"CONSOLE_SCREEN_BUFFER_INFO({self.dwSize.Y!r},{self.dwSize.X!r},{self.dwCursorPosition.Y!r},{self.dwCursorPosition.X!r},{self.wAttributes!r},{self.srWindow.Top!r},{self.srWindow.Left!r},{self.srWindow.Bottom!r},{self.srWindow.Right!r},{self.dwMaximumWindowSize.Y!r},{self.dwMaximumWindowSize.X!r})"
 
 
 class SECURITY_ATTRIBUTES(Structure):

@@ -16,18 +16,14 @@ from asyncio import (
     get_running_loop,
     sleep,
 )
+from collections.abc import Coroutine, Generator, Hashable, Iterable, Iterator
 from contextlib import ExitStack, contextmanager
 from subprocess import Popen
 from traceback import format_tb
 from typing import (
     Any,
     Callable,
-    Coroutine,
-    Generator,
     Generic,
-    Hashable,
-    Iterable,
-    Iterator,
     TypeVar,
     cast,
     overload,

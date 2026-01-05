@@ -37,7 +37,10 @@ fn transform_source(source: &str, remove_main: bool, add_serde: bool) -> Result<
 
     // Generate output
     let tokens = ast.to_token_stream();
-    Ok(prettyplease::unparse(&syn::parse2(tokens)?))
+    let code = prettyplease::unparse(&syn::parse2(tokens)?);
+
+    // Prepend allow attributes to suppress warnings in generated code
+    Ok(format!("#![allow(unused_imports, dead_code)]\n\n{}", code))
 }
 
 fn is_main_fn(item: &Item) -> bool {
@@ -76,12 +79,9 @@ impl VisitMut for PublicityTransformer {
         // Make enum public
         node.vis = syn::parse_quote!(pub);
 
-        // Make all variant fields public
-        for variant in &mut node.variants {
-            for field in &mut variant.fields {
-                field.vis = syn::parse_quote!(pub);
-            }
-        }
+        // NOTE: Do NOT add pub to enum variant fields!
+        // Rust enum variants and their fields automatically share the visibility
+        // of the enum they are in. Adding pub is a compile error.
 
         // Add serde derives if requested
         if self.add_serde {
@@ -126,6 +126,13 @@ impl VisitMut for PublicityTransformer {
     fn visit_item_static_mut(&mut self, node: &mut syn::ItemStatic) {
         node.vis = syn::parse_quote!(pub);
         syn::visit_mut::visit_item_static_mut(self, node);
+    }
+
+    fn visit_item_use_mut(&mut self, node: &mut syn::ItemUse) {
+        // Make use statements public (pub use) so they're re-exported
+        // This is critical for user types to be accessible via `use ferrumpy_snapshot::*;`
+        node.vis = syn::parse_quote!(pub);
+        syn::visit_mut::visit_item_use_mut(self, node);
     }
 }
 

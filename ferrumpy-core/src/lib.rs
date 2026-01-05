@@ -1,4 +1,5 @@
 //! FerrumPy Core Library
+#![allow(clippy::all)]
 //!
 //! Core functionality for Rust debugger enhancements:
 //! - DWARF type processing

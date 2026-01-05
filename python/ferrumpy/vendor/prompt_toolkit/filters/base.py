@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
-from typing import Callable, Iterable, Union
+from collections.abc import Iterable
+from typing import Callable, Union
 
 __all__ = ["Filter", "Never", "Always", "Condition", "FilterOrBool"]
 

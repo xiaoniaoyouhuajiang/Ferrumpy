@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import functools
 from asyncio import get_running_loop
-from typing import Any, Callable, Sequence, TypeVar
+from collections.abc import Sequence
+from typing import Any, Callable, TypeVar
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.application.current import get_app

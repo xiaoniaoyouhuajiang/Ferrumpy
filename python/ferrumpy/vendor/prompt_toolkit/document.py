@@ -8,7 +8,9 @@ import bisect
 import re
 import string
 import weakref
-from typing import Callable, Dict, Iterable, List, NoReturn, Pattern, cast
+from collections.abc import Iterable
+from re import Pattern
+from typing import Callable, Dict, List, NoReturn, cast
 
 from .clipboard import ClipboardData
 from .filters import vi_mode

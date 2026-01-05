@@ -5,11 +5,11 @@ import signal
 import sys
 import threading
 from collections import deque
+from collections.abc import Generator
 from typing import (
     Callable,
     ContextManager,
     Dict,
-    Generator,
     Generic,
     TypeVar,
     Union,
