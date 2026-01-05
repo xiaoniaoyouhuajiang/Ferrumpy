@@ -339,65 +339,17 @@ impl ReplSession {
         // Step 2: Parse snapshot JSON
         let snapshot: serde_json::Value = serde_json::from_str(json_data)?;
 
-        // Get types map for type-aware code generation
-        let types_map = snapshot.get("types").and_then(|v| v.as_object());
-
-        // Check if item-level export is enabled (opt-in: default off for backward compatibility)
-        // Set FERRUMPY_SNAPSHOT_ITEMS=1 to enable item-level export (function access pattern)
-        let use_items = std::env::var("FERRUMPY_SNAPSHOT_ITEMS")
-            .map(|v| v == "1")
-            .unwrap_or(false); // Default: legacy let-binding for backward compatibility
-
-        if use_items {
-            // ========== ITEM-LEVEL EXPORT PATH ==========
+        // ========== ITEM-LEVEL EXPORT PATH ==========
+        if std::env::var("FERRUMPY_DEBUG").is_ok() {
             eprintln!("[DEBUG] Using item-level snapshot export");
-
-            let vars = self.extract_variables(&snapshot)?;
-            if vars.is_empty() {
-                return Ok("Snapshot loaded (no variables)".to_string());
-            }
-
-            let mut all_code = String::new();
-
-            // Re-add companion library if it exists in the snapshot
-            if let Some(lib_path) = snapshot.get("lib_path").and_then(|v| v.as_str()) {
-                let lib_name = snapshot
-                    .get("lib_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("ferrumpy_snapshot");
-                self.add_path_dep_silent(lib_name, Path::new(lib_path))?;
-            }
-
-            if let Some(lib_use) = snapshot.get("lib_use_stmt").and_then(|v| v.as_str()) {
-                all_code.push_str(lib_use);
-                all_code.push('\n');
-            }
-            all_code.push_str("use serde::{Serialize, Deserialize};\n");
-            let module_code = self.generate_snapshot_module(&vars)?;
-            all_code.push_str(&module_code);
-            all_code.push('\n');
-            all_code.push_str("use ferrumpy_vars::*;\n");
-
-            self.eval(&all_code)?;
-            self.initialized = true;
-
-            let sample_names: Vec<&str> = vars.iter().take(5).map(|(n, _, _)| n.as_str()).collect();
-            return Ok(format!(
-                "Snapshot loaded with {} items. Access: {}{}",
-                vars.len(),
-                sample_names
-                    .iter()
-                    .map(|n| format!("{}()", n))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                if vars.len() > 5 { ", ..." } else { "" }
-            ));
         }
 
-        // ========== FALLBACK: Let-Binding Path ==========
+        let vars = self.extract_variables(&snapshot)?;
+        if vars.is_empty() {
+            return Ok("Snapshot loaded (no variables)".to_string());
+        }
 
-        // Step 2: Add companion lib and basic imports
-        let mut import_code = String::new();
+        let mut all_code = String::new();
 
         // Re-add companion library if it exists in the snapshot
         if let Some(lib_path) = snapshot.get("lib_path").and_then(|v| v.as_str()) {
@@ -405,141 +357,33 @@ impl ReplSession {
                 .get("lib_name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("ferrumpy_snapshot");
-
             self.add_path_dep_silent(lib_name, Path::new(lib_path))?;
         }
 
-        // Add companion lib use statement if present (from Python layer)
         if let Some(lib_use) = snapshot.get("lib_use_stmt").and_then(|v| v.as_str()) {
-            import_code.push_str(lib_use);
-            import_code.push('\n');
+            all_code.push_str(lib_use);
+            all_code.push('\n');
         }
+        all_code.push_str("use serde::{Serialize, Deserialize};\n");
+        let module_code = self.generate_snapshot_module(&vars)?;
+        all_code.push_str(&module_code);
+        all_code.push('\n');
+        all_code.push_str("use ferrumpy_vars::*;\n");
 
-        // Add standard library imports for common types
-        import_code.push_str("use std::sync::Arc;\n");
-        import_code.push_str("use std::rc::Rc;\n");
-        import_code.push_str("use std::collections::HashMap;\n");
-        import_code.push_str("use serde::{Serialize, Deserialize};\n");
-
-        if !import_code.is_empty() {
-            self.eval(&import_code)?;
-        }
-
-        // Step 3 & 4: Load variables in groups for balance between speed and stability
-        let mut loaded_vars: Vec<String> = Vec::new();
-        if let Some(variables) = snapshot.get("variables") {
-            if let Some(vars) = variables.as_object() {
-                let mut current_batch_code = String::new();
-                let mut current_batch_vars = Vec::new(); // (name, type, value)
-                let batch_size = 10;
-
-                for (name, value) in vars {
-                    // Get the type hint for this variable
-                    let type_hint = types_map
-                        .and_then(|m| m.get(name))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("serde_json::Value");
-
-                    // Determine the actual type to use
-                    let actual_type = if self.is_supported_type(type_hint) {
-                        self.normalize_rust_type(type_hint)
-                    } else {
-                        "serde_json::Value".to_string()
-                    };
-
-                    let final_type = if self.is_valid_for_deserialization(value, &actual_type) {
-                        actual_type
-                    } else {
-                        "serde_json::Value".to_string()
-                    };
-
-                    // Generate code for this variable
-                    if let Ok(code) = self.generate_typed_var_code(name, value, &final_type) {
-                        current_batch_code.push_str(&code);
-                        current_batch_code.push('\n');
-                        current_batch_vars.push((name.clone(), final_type, value.clone()));
-                    }
-
-                    if current_batch_vars.len() >= batch_size {
-                        self.eval_batch(
-                            &current_batch_code,
-                            &current_batch_vars,
-                            &mut loaded_vars,
-                        )?;
-                        current_batch_code.clear();
-                        current_batch_vars.clear();
-                    }
-                }
-
-                // Process remaining variables
-                if !current_batch_vars.is_empty() {
-                    self.eval_batch(&current_batch_code, &current_batch_vars, &mut loaded_vars)?;
-                }
-            }
-        }
-
+        self.eval(&all_code)?;
         self.initialized = true;
 
-        // Return list of loaded variables
-        if loaded_vars.is_empty() {
-            Ok("Snapshot loaded (no variables loaded - all types filtered)".to_string())
-        } else {
-            Ok(format!(
-                "Snapshot loaded with {} variables: {}",
-                loaded_vars.len(),
-                loaded_vars.join(", ")
-            ))
-        }
-    }
-
-    /// Evaluate a batch of variables and verify their presence.
-    /// Falls back to one-by-one loading if batch compilation fails.
-    fn eval_batch(
-        &mut self,
-        code: &str,
-        batch_vars: &[(String, String, serde_json::Value)],
-        loaded_vars: &mut Vec<String>,
-    ) -> Result<()> {
-        if code.is_empty() {
-            return Ok(());
-        }
-
-        match self.eval(code) {
-            Ok(_) => {
-                // Trust the batch compilation - all variables should be defined
-                for (name, final_type, _) in batch_vars {
-                    loaded_vars.push(format!("{}: {}", name, final_type));
-                }
-                Ok(())
-            }
-            Err(_) => {
-                // If batch fails, try each variable individually (without extra verification)
-                for (name, final_type, value) in batch_vars {
-                    if let Ok(single_code) = self.generate_typed_var_code(name, value, final_type) {
-                        if self.eval(&single_code).is_ok() {
-                            loaded_vars.push(format!("{}: {}", name, final_type));
-                        }
-                    }
-                }
-                Ok(())
-            }
-        }
-    }
-
-    /// Generate type-aware variable declaration code using let bindings
-    /// Note: Static variables don't persist across evcxr eval calls, so we use let bindings
-    /// Functions defined in REPL cannot access these variables - use closure captures instead
-    fn generate_typed_var_code(
-        &self,
-        name: &str,
-        value: &serde_json::Value,
-        type_hint: &str,
-    ) -> Result<String> {
-        // Generate the value initialization expression
-        let init_expr = self.generate_value_init_expr(value, type_hint)?;
-
-        // Generate: let name: Type = init_expr;
-        Ok(format!("let {}: {} = {};", name, type_hint, init_expr))
+        let sample_names: Vec<&str> = vars.iter().take(5).map(|(n, _, _)| n.as_str()).collect();
+        Ok(format!(
+            "Snapshot loaded with {} items. Access: {}{}",
+            vars.len(),
+            sample_names
+                .iter()
+                .map(|n| format!("{}()", n))
+                .collect::<Vec<_>>()
+                .join(", "),
+            if vars.len() > 5 { ", ..." } else { "" }
+        ))
     }
 
     /// Generate initialization expression for a value (for let bindings)
@@ -560,6 +404,7 @@ impl ReplSession {
                     "arc" => self.generate_arc_code(value, type_hint),
                     "rc" => self.generate_rc_code(value, type_hint),
                     "box" => self.generate_box_code(value, type_hint),
+                    "enum" => self.generate_enum_code(value, type_hint),
                     _ => {
                         // Unknown kind, fall through to default handling
                         let json_str = serde_json::to_string(value)?;
@@ -850,6 +695,100 @@ impl ReplSession {
                 "Box::new(serde_json::from_str::<serde_json::Value>(r#\"{}\"#).unwrap())",
                 json_str
             ))
+        }
+    }
+
+    /// Generate code for user-defined enum from __ferrumpy_kind__: enum metadata
+    fn generate_enum_code(&self, value: &serde_json::Value, type_hint: &str) -> Result<String> {
+        let enum_type = value
+            .get("__enum_type__")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown");
+        let variant = value
+            .get("__variant__")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown");
+        let payload = value.get("__payload__");
+
+        // Use the type_hint if it includes the full path, otherwise construct from enum_type
+        let base_type = if type_hint.contains("::") {
+            // Remove the variant part if present in type_hint
+            if let Some(pos) = type_hint.rfind("::") {
+                let before_last = &type_hint[..pos];
+                if let Some(pos2) = before_last.rfind("::") {
+                    // Check if last part looks like a variant (capitalized)
+                    let last = &before_last[pos2 + 2..];
+                    if !last.is_empty() && last.chars().next().unwrap().is_uppercase() {
+                        before_last.to_string()
+                    } else {
+                        type_hint.to_string()
+                    }
+                } else {
+                    before_last.to_string()
+                }
+            } else {
+                type_hint.to_string()
+            }
+        } else {
+            enum_type.to_string()
+        };
+
+        // Handle different payload types
+        match payload {
+            None | Some(serde_json::Value::Null) => {
+                // Unit variant: Status::Active
+                Ok(format!("{}::{}", base_type, variant))
+            }
+            Some(serde_json::Value::Array(arr)) => {
+                // Tuple variant with multiple fields: Status::MultiValue(a, b, c)
+                let mut parts = Vec::new();
+                for elem in arr {
+                    let elem_code = self.primitive_to_code(elem);
+                    parts.push(elem_code);
+                }
+                Ok(format!("{}::{}({})", base_type, variant, parts.join(", ")))
+            }
+            Some(serde_json::Value::Object(obj)) => {
+                // Struct variant: Status::Inactive { reason: "..." }
+                let mut fields = Vec::new();
+                for (key, val) in obj {
+                    let val_code = self.primitive_to_code(val);
+                    fields.push(format!("{}: {}", key, val_code));
+                }
+                Ok(format!(
+                    "{}::{} {{ {} }}",
+                    base_type,
+                    variant,
+                    fields.join(", ")
+                ))
+            }
+            Some(single_val) => {
+                // Tuple variant with single field: Status::Pending(42)
+                let val_code = self.primitive_to_code(single_val);
+                Ok(format!("{}::{}({})", base_type, variant, val_code))
+            }
+        }
+    }
+
+    /// Convert a JSON value to a Rust literal for enum payloads
+    fn primitive_to_code(&self, val: &serde_json::Value) -> String {
+        match val {
+            serde_json::Value::Null => "()".to_string(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::String(s) => format!("{:?}.to_string()", s),
+            serde_json::Value::Array(arr) => {
+                let elements: Vec<String> = arr.iter().map(|e| self.primitive_to_code(e)).collect();
+                format!("vec![{}]", elements.join(", "))
+            }
+            serde_json::Value::Object(_) => {
+                // For complex objects, fall back to serde
+                let json_str = serde_json::to_string(val).unwrap_or_default();
+                format!(
+                    "serde_json::from_str::<serde_json::Value>(r#\"{}\"#).unwrap()",
+                    json_str
+                )
+            }
         }
     }
 

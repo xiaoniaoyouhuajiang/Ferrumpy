@@ -405,6 +405,37 @@ def value_to_json(value, visited: Optional[Set[int]] = None, depth: int = 0) -> 
     if ('[' in type_name and ']' in type_name) or type_name.startswith('['):
         return _serialize_fixed_array(value, visited, depth)
     
+    # Handle user-defined enums
+    variants = value.GetChildMemberWithName('$variants$')
+    if variants.IsValid():
+        res = _serialize_enum(value, visited, depth)
+        if res: return res
+    
+    # Also check for explicit variant in type name (e.g., Status::Active, Option::Some)
+    # OR if it's a C-style enum (has summary but no variants)
+    if '::' in type_name:
+        parts = type_name.split('::')
+        last_part = parts[-1] if parts else ""
+        # Skip standard library types we handle elsewhere
+        if last_part and last_part[0].isupper():
+            known_std = ['Vec', 'Option', 'Result', 'Arc', 'Rc', 'Box', 'String', 
+                        'HashMap', 'RefCell', 'Cell', 'Mutex', 'RwLock']
+            if not any(k in type_name for k in known_std):
+                # Heuristic: if it has lowercase child names, it's likely a struct, not an enum
+                is_struct = False
+                num_children = value.GetNumChildren()
+                if num_children > 0:
+                    for i in range(min(num_children, 5)): # Check first few children
+                        child = value.GetChildAtIndex(i)
+                        name = child.GetName() or ""
+                        if name and name[0].islower() and not name.startswith('$'):
+                            is_struct = True
+                            break
+                
+                if not is_struct:
+                    res = _serialize_enum(value, visited, depth)
+                    if res: return res
+    
     # Default: serialize as struct
     return _serialize_struct(value, visited, depth)
 
@@ -801,6 +832,142 @@ def _serialize_fixed_array(value, visited: Set[int], depth: int = 0) -> Dict[str
         "__elements__": elements,
         "__type__": type_name,
         "__length__": num_children
+    }
+
+
+def _serialize_enum(value, visited: Set[int], depth: int = 0) -> Optional[Dict[str, Any]]:
+    """Serialize a user-defined enum with __ferrumpy_kind__: enum metadata.
+    
+    LLDB represents Rust enums with a $variants$ child containing:
+    - $variant$0, $variant$1, etc. for each variant
+    - Each variant has $discr$ (discriminant) and 'value' child
+    - The discriminant is encoded as 2^63 + variant_index
+    
+    Returns None if the value doesn't appear to be an enum.
+    """
+    type_name = value.GetType().GetName()
+    
+    # Extract base enum type from type name
+    # e.g., "rust_sample::types::Status" -> "Status"
+    parts = type_name.split('::')
+    enum_type = parts[-1] if parts else type_name
+    
+    # Default values
+    variant = "Unknown"
+    payload = None
+    
+    # Try GetValue() or GetSummary() first - often gives us the variant directly for C-style enums
+    summary = value.GetSummary() or value.GetValue()
+    if summary:
+        # Parse summary like "Active", "Pending(7)", "Inactive { reason: ... }"
+        summary = summary.strip()
+        if summary:
+            # Check if summary looks like a variant name (single word or leads with word)
+            paren_pos = summary.find('(')
+            brace_pos = summary.find('{')
+            
+            potential_var = ""
+            if paren_pos > 0:
+                potential_var = summary[:paren_pos].strip()
+            elif brace_pos > 0:
+                potential_var = summary[:brace_pos].strip()
+            else:
+                potential_var = summary
+            
+            # Simple heuristic: variant names are alphanumeric and capitalized
+            if potential_var and potential_var[0].isupper() and ' ' not in potential_var:
+                variant = potential_var
+    
+    # Check for $variants$ structure to get active variant and payload
+    variants = value.GetChildMemberWithName('$variants$')
+    if variants.IsValid():
+        # Find the active variant using discriminant
+        # LLDB discriminant is encoded as 2^63 + variant_index
+        active_index = None
+        
+        # Check any variant's $discr$ to get the active index
+        for i in range(variants.GetNumChildren()):
+            var_child = variants.GetChildAtIndex(i)
+            if not var_child.IsValid():
+                continue
+            
+            var_name = var_child.GetName() or ""
+            if not var_name.startswith('$variant$'):
+                continue
+            
+            # Check discriminant
+            discr = var_child.GetChildMemberWithName('$discr$')
+            if discr.IsValid():
+                discr_val = discr.GetValueAsUnsigned(0)
+                # Extract variant index: discr_val & 0x7FFFFFFFFFFFFFFF
+                active_index = discr_val & 0x7FFFFFFFFFFFFFFF
+                break
+        
+        # Now get the variant at that index
+        if active_index is not None:
+            target_var = variants.GetChildMemberWithName(f'$variant${active_index}')
+            # Fallback: if $variant$N doesn't exist, try $variant$ (LLDB uses this for last variant)
+            if not target_var.IsValid():
+                target_var = variants.GetChildMemberWithName('$variant$')
+            if target_var.IsValid():
+                val_child = target_var.GetChildMemberWithName('value')
+                if val_child.IsValid():
+                    # Extract variant name from value's type if we don't have it
+                    if variant == "Unknown":
+                        val_type = val_child.GetType().GetName()
+                        if '::' in val_type:
+                            val_parts = val_type.split('::')
+                            for part in reversed(val_parts):
+                                clean_part = part.split(':')[0].split('<')[0].strip()
+                                if clean_part and clean_part[0].isupper() and clean_part != enum_type:
+                                    variant = clean_part
+                                    break
+                    
+                    # Extract payload from value's children
+                    num_val_children = val_child.GetNumChildren()
+                    if num_val_children > 0:
+                        first = val_child.GetChildAtIndex(0)
+                        if first.IsValid():
+                            first_name = first.GetName() or ""
+                            # Tuple variant: __0, __1, etc.
+                            if first_name.startswith('__') or first_name.isdigit():
+                                if num_val_children == 1:
+                                    payload = value_to_json(first, visited, depth+1)
+                                else:
+                                    payload = []
+                                    for j in range(num_val_children):
+                                        ch = val_child.GetChildAtIndex(j)
+                                        if ch.IsValid():
+                                            payload.append(value_to_json(ch, visited, depth+1))
+                            elif not first_name.startswith('$'):
+                                # Struct variant: named fields
+                                payload = {}
+                                for j in range(num_val_children):
+                                    ch = val_child.GetChildAtIndex(j)
+                                    if ch.IsValid():
+                                        ch_name = ch.GetName() or f"_{j}"
+                                        if not ch_name.startswith('$'):
+                                            payload[ch_name] = value_to_json(ch, visited, depth+1)
+    
+    # Fallback: try to get variant from type name if it looks like Enum::Variant
+    if variant == "Unknown" and '::' in type_name:
+        # Check if it looks like Namespace::Enum::Variant
+        if len(parts) >= 2:
+            last = parts[-1]
+            second_last = parts[-2]
+            if last and last[0].isupper() and second_last and second_last[0].isupper():
+                variant = last
+                enum_type = second_last
+    
+    # If we STILL have "Unknown" and NO variants child, this is likely NOT an enum
+    if variant == "Unknown" and not variants.IsValid():
+        return None
+    
+    return {
+        "__ferrumpy_kind__": "enum",
+        "__enum_type__": enum_type,
+        "__variant__": variant,
+        "__payload__": payload
     }
 
 

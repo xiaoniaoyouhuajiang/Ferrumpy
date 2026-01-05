@@ -79,7 +79,7 @@ expect {
 
 # Test 3a: Access simple_string (String type)
 expect ">>"
-send "simple_string.clone()\r"
+send "simple_string().clone()\r"
 expect {
     "Hello" {
         puts "✓ Snapshot variable 'simple_string' accessible"
@@ -96,7 +96,7 @@ expect {
 
 # Test 3b: Access numbers (Vec<i32>)
 expect ">>"
-send "numbers.len()\r"
+send "numbers().len()\r"
 expect {
     "5" {
         puts "✓ Snapshot variable 'numbers' accessible (len=5)"
@@ -113,7 +113,7 @@ expect {
 
 # Test 3c: Access ok_result (Result<i32, String> or serde_json::Value)
 expect ">>"
-send "ok_result\r"
+send "ok_result()\r"
 expect {
     -re "Ok|Err|Object|Number|String|Null|Array" {
         puts "✓ Snapshot variable 'ok_result' accessible"
@@ -130,7 +130,7 @@ expect {
 
 # Test 3d: Access map (HashMap<String, i32> or serde_json::Value)
 expect ">>"
-send "map\r"
+send "map()\r"
 expect {
     -re "Object|Number|String|Null|Array" {
         puts "✓ Snapshot variable 'map' accessible"
@@ -367,7 +367,7 @@ expect {
 
 # Test 10a: Iterate over snapshot numbers
 expect ">>"
-send "let doubled: Vec<i32> = numbers.iter().map(|x| x * 2).collect(); doubled.len()\r"
+send "let doubled: Vec<i32> = numbers().iter().map(|x| x * 2).collect(); doubled.len()\r"
 expect {
     "5" {
         puts "✓ Vec operations on snapshot data works"
@@ -379,7 +379,7 @@ expect {
 
 # Test 10b: Sum of numbers
 expect ">>"
-send "numbers.iter().sum::<i32>()\r"
+send "numbers().iter().sum::<i32>()\r"
 expect {
     "15" {
         puts "✓ Sum of snapshot numbers works"

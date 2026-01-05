@@ -104,7 +104,7 @@ run_lldb_tests() {
     tmpfile=$(mktemp)
     lldb -b target/debug/rust_sample \
         -o "command script import /Users/wangjiajie/software/FerrumPy/python/ferrumpy" \
-        -o "b main.rs:94" \
+        -o "b main.rs:80" \
         -o "run" \
         -o "ferrumpy pp simple_string" \
         -o "ferrumpy pp numbers" \
@@ -177,21 +177,51 @@ run_repl_tests() {
         return 0
     fi
     
-    echo "Starting REPL test (this may take a while for first-time compilation)..."
+    echo "Starting REPL tests (this may take a while for first-time compilation)..."
     echo "Using expect for interactive testing..."
     echo
     
-    # Run the expect script
+    local all_passed=true
+    
+    # Run the main REPL test
+    echo "=== Test 1: REPL Basic Functionality ==="
     if expect "$PROJECT_ROOT/tests/test_repl.exp" "$PROJECT_ROOT"; then
-        echo
-        echo "REPL Tests: PASSED"
+        echo "  ✓ REPL basic tests passed"
+    else
+        echo "  ✗ REPL basic tests failed"
+        all_passed=false
+    fi
+    echo
+    
+    # Run enum serialization tests
+    echo "=== Test 2: Enum Type Serialization ==="
+    if expect "$PROJECT_ROOT/tests/test_enum.exp"; then
+        echo "  ✓ Enum tests passed"
+    else
+        echo "  ✗ Enum tests failed"
+        all_passed=false
+    fi
+    echo
+    
+    # Run multi-file project tests
+    echo "=== Test 3: Multi-File Project Support ==="
+    if expect "$PROJECT_ROOT/tests/test_multifile.exp"; then
+        echo "  ✓ Multi-file tests passed"
+    else
+        echo "  ✗ Multi-file tests failed"
+        all_passed=false
+    fi
+    echo
+    
+    if $all_passed; then
+        echo "REPL Tests: ALL PASSED"
         return 0
     else
-        echo
-        echo "REPL Tests: FAILED"
+        echo "REPL Tests: SOME FAILED"
         return 1
     fi
 }
+
 
 # ============================================
 # Main

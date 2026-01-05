@@ -1,0 +1,70 @@
+#!/usr/bin/expect -f
+#
+# Test enum type serialization and restoration in REPL
+#
+
+set timeout 120
+set project_root [file dirname [file dirname [info script]]]
+
+# Disable terminal formatting and use simple REPL mode
+set env(TERM) dumb
+set env(FERRUMPY_SIMPLE_MODE) 1
+
+spawn lldb $project_root/tests/rust_sample/target/debug/rust_sample
+
+expect "(lldb)"
+send "command script import $project_root/python/ferrumpy\r"
+expect "loaded"
+
+send "b main.rs:81\r"
+expect "Breakpoint"
+
+send "run\r"
+expect "stop reason"
+expect "(lldb)"
+
+send "ferrumpy repl\r"
+expect ">>"
+
+# Test unit variant
+send "status_active()\r"
+expect {
+    "Active" { puts "\n✓ status_active (unit variant) works" }
+    timeout { puts "\n✗ status_active timeout"; exit 1 }
+}
+expect ">>"
+
+# Test tuple variant
+send "status_pending()\r"
+expect {
+    "Pending" { puts "✓ status_pending (tuple variant) works" }
+    timeout { puts "✗ status_pending timeout"; exit 1 }
+}
+expect ">>"
+
+# Test struct variant
+send "status_inactive()\r"
+expect {
+    -re "Inactive|reason" { puts "✓ status_inactive (struct variant) works" }
+    timeout { puts "✗ status_inactive timeout"; exit 1 }
+}
+expect ">>"
+
+# Test C-like enum
+send "priority_high()\r"
+expect {
+    "High" { puts "✓ priority_high (C-like enum) works" }
+    timeout { puts "✗ priority_high timeout"; exit 1 }
+}
+expect ">>"
+
+# Exit REPL
+send ":q\r"
+expect "(lldb)"
+
+send "kill\r"
+send "exit\r"
+expect eof
+
+puts "\n=== All enum tests passed ==="
+exit 0

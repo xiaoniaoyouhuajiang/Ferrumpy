@@ -3,32 +3,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-/// A sample struct for testing pretty printers
-#[derive(Debug)]
-struct User {
-    name: String,
-    age: u32,
-    email: Option<String>,
-}
+// Import types from our library modules
+mod types;
+mod utils;
 
-/// Nested struct for testing path access
-#[derive(Debug)]
-struct Config {
-    database: DatabaseConfig,
-    users: Vec<User>,
-}
-
-impl User {
-    pub fn change_age(&mut self, age: u32) {
-        self.age = age;
-    }
-}
-
-#[derive(Debug)]
-struct DatabaseConfig {
-    host: String,
-    port: u16,
-}
+use types::{Config, Container, DatabaseConfig, Priority, Status, User};
 
 fn main() {
     // Test various Rust types
@@ -49,11 +28,7 @@ fn main() {
     map.insert("two".to_string(), 2);
     map.insert("three".to_string(), 3);
 
-    let arc_value = Arc::new(User {
-        name: "Arc User".to_string(),
-        age: 30,
-        email: Some("arc@example.com".to_string()),
-    });
+    let arc_value = Arc::new(User::new("Arc User", 30).with_email("arc@example.com"));
 
     let rc_value = Rc::new(42);
 
@@ -67,28 +42,40 @@ fn main() {
 
     let refcell = RefCell::new(vec![1, 2, 3]);
 
-    // Nested structure for path testing
+    // Nested structure for path testing (using types from types.rs)
     let config = Config {
         database: DatabaseConfig {
             host: "localhost".to_string(),
             port: 5432,
         },
         users: vec![
-            User {
-                name: "Alice".to_string(),
-                age: 25,
-                email: Some("alice@example.com".to_string()),
-            },
-            User {
-                name: "Bob".to_string(),
-                age: 30,
-                email: None,
-            },
+            User::new("Alice", 25).with_email("alice@example.com"),
+            User::new("Bob", 30),
         ],
     };
 
     // Tuple for testing tuple access
     let tuple = ("first", 2, 3.14);
+
+    // ===== NEW: Enum test cases =====
+
+    // Unit variant
+    let status_active = Status::Active;
+
+    // Tuple variant with payload
+    let status_pending = Status::Pending(7);
+
+    // Struct variant with named fields
+    let status_inactive = Status::Inactive {
+        reason: "on vacation".to_string(),
+    };
+
+    // C-like enum (simple discriminant)
+    let priority_low = Priority::Low;
+    let priority_high = Priority::High;
+
+    // Generic container type
+    let container = Container::new(42).with_meta("source", "test");
 
     // Set a breakpoint here to test pretty printers
     println!("=== FerrumPy Test Program ===");
@@ -112,4 +99,12 @@ fn main() {
     println!("fixed_array: {:?}", fixed_array);
     println!("config: {:?}", config);
     println!("tuple: {:?}", tuple);
+
+    // Print enum values
+    println!("status_active: {:?}", status_active);
+    println!("status_pending: {:?}", status_pending);
+    println!("status_inactive: {:?}", status_inactive);
+    println!("priority_low: {:?}", priority_low);
+    println!("priority_high: {:?}", priority_high);
+    println!("container: {:?}", container);
 }
