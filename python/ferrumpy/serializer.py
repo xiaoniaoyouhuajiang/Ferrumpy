@@ -393,6 +393,10 @@ def value_to_json(value, visited: Optional[Set[int]] = None, depth: int = 0) -> 
     if 'Result<' in type_name:
         return _serialize_result(value, visited, depth)
     
+    # Handle HashMap - use GetSummary() which returns formatted key-value pairs
+    if 'HashMap<' in type_name:
+        return _serialize_hashmap(value, visited, depth)
+    
     # Handle Box/Arc/Rc (smart pointers)
     if any(p in type_name for p in ['Box<', 'Arc<', 'Rc<']):
         return _serialize_smart_pointer(value, visited, depth)
@@ -514,10 +518,64 @@ def _serialize_string(value) -> str:
 
 
 def _serialize_str_ref(value) -> str:
-    """Serialize a &str reference."""
+    """Serialize a &str reference.
+    
+    &str is a fat pointer: (data_ptr: *const u8, length: usize)
+    We try GetSummary first, then fall back to direct memory reading.
+    """
+    # Try LLDB summary first
     summary = value.GetSummary()
     if summary:
         return summary.strip('"')
+    
+    # Fallback: read from memory using fat pointer structure
+    process = value.GetProcess()
+    if not process or not process.IsValid():
+        return "<&str>"
+    
+    # Pattern 1: Try direct children (index 0 = ptr, index 1 = len)
+    if value.GetNumChildren() >= 2:
+        ptr_child = value.GetChildAtIndex(0)
+        len_child = value.GetChildAtIndex(1)
+        if ptr_child.IsValid() and len_child.IsValid():
+            ptr_addr = ptr_child.GetValueAsUnsigned()
+            str_len = len_child.GetValueAsUnsigned()
+            if ptr_addr and str_len and str_len < 10000:  # Sanity check
+                error = lldb.SBError()
+                data = process.ReadMemory(ptr_addr, min(str_len, 4096), error)
+                if not error.Fail():
+                    return data.decode('utf-8', errors='replace')
+    
+    # Pattern 2: Try named children (data_ptr, length)
+    data_ptr = value.GetChildMemberWithName('data_ptr')
+    length = value.GetChildMemberWithName('length')
+    if data_ptr.IsValid() and length.IsValid():
+        ptr_addr = data_ptr.GetValueAsUnsigned()
+        str_len = length.GetValueAsUnsigned()
+        if ptr_addr and str_len and str_len < 10000:
+            error = lldb.SBError()
+            data = process.ReadMemory(ptr_addr, min(str_len, 4096), error)
+            if not error.Fail():
+                return data.decode('utf-8', errors='replace')
+    
+    # Pattern 3: Read raw memory at value's address
+    # &str in memory on 64-bit: [ptr: 8 bytes][len: 8 bytes]
+    addr = value.GetLoadAddress()
+    if addr != 0xFFFFFFFFFFFFFFFF:  # LLDB_INVALID_ADDRESS
+        try:
+            import struct
+            error = lldb.SBError()
+            # Read 16 bytes (ptr + len on 64-bit)
+            data = process.ReadMemory(addr, 16, error)
+            if not error.Fail() and len(data) == 16:
+                ptr_addr, str_len = struct.unpack('QQ', data)  # Two 64-bit values
+                if ptr_addr and str_len and str_len < 10000:  # Sanity check
+                    str_data = process.ReadMemory(ptr_addr, min(str_len, 4096), error)
+                    if not error.Fail():
+                        return str_data.decode('utf-8', errors='replace')
+        except:
+            pass
+    
     return "<&str>"
 
 
@@ -793,6 +851,72 @@ def _serialize_smart_pointer(value, visited: Set[int], depth: int = 0) -> Any:
         "__inner__": inner_value
     }
 
+
+def _serialize_hashmap(value, visited: Set[int], depth: int = 0) -> Dict[str, Any]:
+    """Serialize a HashMap using LLDB's GetSummary() which formats key-value pairs.
+    
+    LLDB's summary for HashMap typically looks like: '{"key1": value1, "key2": value2}'
+    We try to parse this, falling back to a structured representation if parsing fails.
+    """
+    type_name = value.GetType().GetName()
+    
+    # Try LLDB summary first - this often gives us formatted HashMap contents
+    summary = value.GetSummary()
+    if summary:
+        # Try to parse the summary as JSON-like data
+        # LLDB summary format: size=N { "key1": value1, "key2": value2 }
+        # Or sometimes just: { "key1": value1, ... }
+        import re
+        
+        # Extract the {...} part
+        brace_match = re.search(r'\{[^}]*\}', summary)
+        if brace_match:
+            try:
+                # Try to parse as JSON object
+                map_str = brace_match.group(0)
+                parsed = json.loads(map_str)
+                if isinstance(parsed, dict):
+                    return parsed  # Return the parsed dict directly
+            except (json.JSONDecodeError, ValueError):
+                pass
+        
+        # If summary exists but can't parse, store as metadata
+        return {
+            "__ferrumpy_kind__": "hashmap",
+            "__summary__": summary,
+            "__type__": normalize_type_name(type_name)
+        }
+    
+    # Fallback: try to iterate children (may work for some LLDB versions)
+    result = {}
+    num_children = value.GetNumChildren()
+    if num_children > 0:
+        for i in range(min(num_children, 100)):  # Limit for performance
+            child = value.GetChildAtIndex(i)
+            if child.IsValid():
+                # Try to get key and value
+                key_child = child.GetChildMemberWithName('0')  # Some LLDB versions use numbered children
+                val_child = child.GetChildMemberWithName('1')
+                if key_child.IsValid() and val_child.IsValid():
+                    key = value_to_json(key_child, visited, depth+1)
+                    val = value_to_json(val_child, visited, depth+1)
+                    if isinstance(key, str):
+                        result[key] = val
+                    else:
+                        # Non-string keys: use array of pairs format
+                        if "__pairs__" not in result:
+                            result = {"__ferrumpy_kind__": "hashmap", "__pairs__": []}
+                        result["__pairs__"].append([key, val])
+        
+        if result:
+            return result
+    
+    # Final fallback: return empty with type info
+    return {
+        "__ferrumpy_kind__": "hashmap",
+        "__type__": normalize_type_name(type_name),
+        "__error__": "Could not extract HashMap contents"
+    }
 
 def _serialize_tuple(value, visited: Set[int], depth: int = 0) -> Dict[str, Any]:
     """Serialize a tuple with __ferrumpy_kind__ metadata."""

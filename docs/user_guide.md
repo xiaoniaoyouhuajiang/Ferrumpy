@@ -116,6 +116,25 @@ The accessor functions return a reference (or a cloned value for copy types). To
 >> process_user(my_user); // OK: moves my_user
 ```
 
+**Restoring Complex Types:**
+Some types (HashMap, Tuple, generic containers) are stored as JSON and need manual restoration using the `restore!` macro:
+
+```rust
+// View the JSON data
+>> map()
+Object({"one": Number(1), "two": Number(2)})
+
+// Restore to original type using restore! macro
+>> let my_map = restore!(map, HashMap<String, i32>);
+>> my_map.get("one")
+Some(1)
+
+// For tuples
+>> let my_tuple = restore!(tuple_var, (i32, String, bool));
+>> my_tuple.0
+42
+```
+
 ### `ferrumpy type <expr>`
 
 Display type information for a variable.

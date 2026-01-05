@@ -370,6 +370,17 @@ impl ReplSession {
         all_code.push('\n');
         all_code.push_str("use ferrumpy_vars::*;\n");
 
+        // Add the restore! helper macro for user-assisted type restoration
+        // This allows users to convert serde_json::Value back to specific types
+        let restore_macro = r#"
+macro_rules! restore {
+    ($var:ident, $type:ty) => {
+        serde_json::from_value::<$type>($var().clone()).unwrap()
+    };
+}
+"#;
+        all_code.push_str(restore_macro);
+
         self.eval(&all_code)?;
         self.initialized = true;
 
