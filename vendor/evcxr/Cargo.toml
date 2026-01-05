@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+  "evcxr",
+  "evcxr_repl",
+  "evcxr_jupyter",
+  "evcxr_runtime",
+  "runtimes/evcxr_image",
+  "print_performance_info",
+]
+
+exclude = [
+  "evcxr_input",
+  "runtimes"
+]
+
+[profile.dev]
+# The speedup from optimization significantly exceeds any slowdown in compilation.
+opt-level = 2
+# Debug is disabled in order to speed up builds.
+debug = 0

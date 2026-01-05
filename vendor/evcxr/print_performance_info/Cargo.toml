@@ -1,0 +1,10 @@
+[package]
+name = "print_performance_info"
+version = "0.1.0"
+authors = ["The Evcxr Authors"]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+evcxr = { path = "../evcxr" }
+crossbeam-channel = "0.5.15"

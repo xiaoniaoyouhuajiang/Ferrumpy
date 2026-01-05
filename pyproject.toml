@@ -14,5 +14,9 @@ module-name = "ferrumpy.ferrumpy_core"
 bindings = "pyo3"
 manifest-path = "ferrumpy-core/Cargo.toml"
 features = ["python"]
-# Data files to include in the wheel
+strip = true
+
+# Include data directory contents in the wheel
+# The data/bin directory should contain ferrumpy-repl-worker binary
+# Run: mkdir -p data/bin && cp target/release/ferrumpy-repl-worker data/bin/
 data = "data"

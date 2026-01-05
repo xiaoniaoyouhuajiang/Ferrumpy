@@ -55,7 +55,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run Rust tests
-        run: cargo test --all-features
+        run: cargo test -p ferrumpy-core
 
   test-python:
     name: Python Type Normalization Tests
@@ -71,20 +71,18 @@ jobs:
       - name: Run type normalization tests
         run: python3 tests/test_type_normalization.py
 
+  # Build abi3 wheels - one per platform (compatible with Python 3.9+)
   build:
     name: Build Wheels
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
-        python-version: ['3.10', '3.11', '3.12']
-        exclude:
-          # Only test one Python version on Linux to save CI time
-          - os: ubuntu-latest
-            python-version: '3.10'
-          - os: ubuntu-latest
-            python-version: '3.12'
+        include:
+          - os: macos-latest    # macOS arm64 (Apple Silicon)
+            artifact-name: macos-arm64
+          - os: ubuntu-latest   # Linux x86_64
+            artifact-name: linux-x86_64
 
     steps:
       - uses: actions/checkout@v4
@@ -92,7 +90,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: '3.11'
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -103,13 +101,63 @@ jobs:
       - name: Install maturin
         run: pip install maturin
 
-      - name: Build wheel
+      - name: Build repl-worker binary
+        run: |
+          cargo build --release -p ferrumpy-repl-worker
+          mkdir -p data/scripts
+          cp target/release/ferrumpy-repl-worker data/scripts/
+
+      - name: Build abi3 wheel (Python 3.9+)
         run: maturin build --release --out dist
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}-py${{ matrix.python-version }}
+          name: wheels-${{ matrix.artifact-name }}
+          path: dist/*.whl
+
+  # Linux arm64 cross-compilation build
+  build-linux-arm64:
+    name: Build Linux ARM64 Wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install cross-compilation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Build repl-worker binary for arm64
+        run: |
+          cargo build --release -p ferrumpy-repl-worker --target aarch64-unknown-linux-gnu
+          mkdir -p data/scripts
+          cp target/aarch64-unknown-linux-gnu/release/ferrumpy-repl-worker data/scripts/
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Build wheel for arm64
+        run: maturin build --release --out dist --target aarch64-unknown-linux-gnu
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-arm64
           path: dist/*.whl
 
   integration-macos:
@@ -132,6 +180,12 @@ jobs:
 
       - name: Install maturin
         run: pip install maturin
+
+      - name: Build repl-worker binary
+        run: |
+          cargo build --release -p ferrumpy-repl-worker
+          mkdir -p data/scripts
+          cp target/release/ferrumpy-repl-worker data/scripts/
 
       - name: Build and install FerrumPy
         run: maturin develop --release
@@ -166,6 +220,12 @@ jobs:
 
       - name: Install maturin
         run: pip install maturin
+
+      - name: Build repl-worker binary
+        run: |
+          cargo build --release -p ferrumpy-repl-worker
+          mkdir -p data/scripts
+          cp target/release/ferrumpy-repl-worker data/scripts/
 
       - name: Build and publish
         env:

@@ -45,7 +45,15 @@ python3 tests/test_type_normalization.py
 echo "✅ Python tests OK"
 echo
 
-# 6. Build wheel
+# 6. Build repl-worker binary
+echo "🔧 Building repl-worker binary..."
+cargo build --release -p ferrumpy-repl-worker
+mkdir -p data/scripts
+cp target/release/ferrumpy-repl-worker data/scripts/
+echo "✅ repl-worker binary OK"
+echo
+
+# 7. Build wheel
 echo "🔨 Building wheel..."
 if ! command -v maturin &> /dev/null; then
     echo "Installing maturin..."
