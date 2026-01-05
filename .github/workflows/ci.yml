@@ -16,8 +16,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -49,8 +47,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -92,8 +88,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -124,8 +118,6 @@ jobs:
     needs: [lint, test-rust, test-python]
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -163,8 +155,6 @@ jobs:
     needs: [build, integration-macos]
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Set up Python
         uses: actions/setup-python@v5

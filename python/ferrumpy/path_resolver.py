@@ -20,7 +20,12 @@ except ImportError:
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
+
+# Use string annotations to avoid import-time errors when lldb is unavailable
+if TYPE_CHECKING:
+    import lldb as lldb_types
+
 
 
 class PathResolutionError(Exception):
@@ -115,7 +120,7 @@ def tokenize_path(path: str) -> List[PathSegment]:
     return segments
 
 
-def resolve_path(frame: lldb.SBFrame, path: str) -> lldb.SBValue:
+def resolve_path(frame: "lldb.SBFrame", path: str) -> "lldb.SBValue":
     """
     Resolve a path expression to an SBValue.
 
@@ -154,7 +159,7 @@ def resolve_path(frame: lldb.SBFrame, path: str) -> lldb.SBValue:
     return value
 
 
-def _resolve_segment(value: lldb.SBValue, segment: PathSegment) -> lldb.SBValue:
+def _resolve_segment(value: "lldb.SBValue", segment: PathSegment) -> "lldb.SBValue":
     """Resolve a single path segment."""
 
     if isinstance(segment, IdentSegment):
@@ -236,7 +241,7 @@ def _is_smart_pointer_type(type_name: str) -> bool:
     return any(re.match(p, type_name) for p in smart_pointer_patterns)
 
 
-def _resolve_vec_index(value: lldb.SBValue, index: int) -> lldb.SBValue:
+def _resolve_vec_index(value: "lldb.SBValue", index: int) -> "lldb.SBValue":
     """
     Resolve Vec<T>[index] by accessing the element via data pointer.
     """
@@ -281,7 +286,7 @@ def _resolve_vec_index(value: lldb.SBValue, index: int) -> lldb.SBValue:
     return elem
 
 
-def _resolve_array_index(value: lldb.SBValue, index: int) -> lldb.SBValue:
+def _resolve_array_index(value: "lldb.SBValue", index: int) -> "lldb.SBValue":
     """
     Resolve [T; N][index] by accessing the element directly.
     """
@@ -297,7 +302,7 @@ def _resolve_array_index(value: lldb.SBValue, index: int) -> lldb.SBValue:
     return child
 
 
-def _find_pointer_in_buf(buf: lldb.SBValue) -> Optional[lldb.SBValue]:
+def _find_pointer_in_buf(buf: "lldb.SBValue") -> Optional["lldb.SBValue"]:
     """
     Navigate through RawVec/Unique/NonNull to find the actual data pointer.
 
@@ -321,7 +326,7 @@ def _find_pointer_in_buf(buf: lldb.SBValue) -> Optional[lldb.SBValue]:
     return None
 
 
-def _navigate_path(value: lldb.SBValue, path: list) -> Optional[lldb.SBValue]:
+def _navigate_path(value: "lldb.SBValue", path: list) -> Optional["lldb.SBValue"]:
     """Navigate a path of field names through an SBValue."""
     current = value
     for field_name in path:
