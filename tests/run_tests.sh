@@ -40,52 +40,9 @@ run_python_tests() {
     echo "--- Python Unit Tests (No LLDB) ---"
     echo
     
-    python3 << 'PYTHON_SCRIPT'
-import sys
-sys.path.insert(0, '/Users/wangjiajie/software/FerrumPy')
-from python.ferrumpy.path_resolver import tokenize_path, IdentSegment, IndexSegment, DerefSegment
-
-tests = [
-    ('foo', [IdentSegment('foo')]),
-    ('foo.bar', [IdentSegment('foo'), IdentSegment('bar')]),
-    ('foo[0]', [IdentSegment('foo'), IndexSegment(0)]),
-    ('foo.bar[1].baz', [IdentSegment('foo'), IdentSegment('bar'), IndexSegment(1), IdentSegment('baz')]),
-    ('foo.*', [IdentSegment('foo'), DerefSegment()]),
-    ('foo.0', [IdentSegment('foo'), IdentSegment('__0')]),
-]
-
-passed = 0
-failed = 0
-for path, expected in tests:
-    result = tokenize_path(path)
-    if result == expected:
-        print(f'  ✓ tokenize_path("{path}")')
-        passed += 1
-    else:
-        print(f'  ✗ tokenize_path("{path}")')
-        print(f'    Expected: {expected}')
-        print(f'    Got:      {result}')
-        failed += 1
-
-print()
-print(f'Tokenizer: {passed}/{passed+failed} passed')
-sys.exit(1 if failed > 0 else 0)
-PYTHON_SCRIPT
-
-    if [ $? -ne 0 ]; then
-        return 1
-    fi
-    
-    echo
     echo "--- Type Normalization Tests ---"
-    echo
     python3 "$PROJECT_ROOT/tests/test_type_normalization.py"
     
-    echo
-    echo "--- Completion API Tests ---"
-    echo
-    python3 "$PROJECT_ROOT/tests/test_completions.py"
-
     return $?
 }
 

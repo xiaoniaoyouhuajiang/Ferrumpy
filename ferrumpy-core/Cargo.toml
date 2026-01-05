@@ -35,7 +35,7 @@ evcxr = { path = "../vendor/evcxr/evcxr" }
 crossbeam-channel = "0.5"
 
 # Python bindings (optional)
-pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

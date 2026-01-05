@@ -475,18 +475,31 @@ def _serialize_primitive(value) -> Any:
 
 
 def _serialize_string(value) -> str:
-    """Serialize a Rust String."""
-    # Try LLDB summary first
+    """Serialize a Rust String.
+    
+    String layout: { vec: Vec<u8> { buf: RawVec { ptr, cap }, len } }
+    We try GetSummary first, then fall back to direct memory reading.
+    """
+    # Try LLDB summary first (most reliable when it works)
     summary = value.GetSummary()
     if summary:
-        # Remove surrounding quotes
         return summary.strip('"')
     
-    # Fallback: read from memory
-    vec = value.GetChildMemberWithName('vec')
-    if not vec.IsValid():
+    process = value.GetProcess()
+    if not process or not process.IsValid():
         return ""
     
+    # Get the Vec<u8> inside String
+    vec = value.GetChildMemberWithName('vec')
+    if not vec.IsValid():
+        # Try direct children access
+        if value.GetNumChildren() > 0:
+            vec = value.GetChildAtIndex(0)
+    
+    if not vec or not vec.IsValid():
+        return ""
+    
+    # Get length
     len_child = vec.GetChildMemberWithName('len')
     if not len_child.IsValid():
         return ""
@@ -495,24 +508,76 @@ def _serialize_string(value) -> str:
     if length == 0:
         return ""
     
-    # Get data pointer
-    buf = vec.GetChildMemberWithName('buf')
-    if not buf.IsValid():
+    if length > 10000:  # Sanity check
         return f"<String len={length}>"
     
-    # Try to read the actual bytes
-    try:
-        from .providers import _find_pointer_in_buf
-        ptr = _find_pointer_in_buf(buf)
-        if ptr and ptr.IsValid():
-            ptr_addr = ptr.GetValueAsUnsigned()
-            if ptr_addr:
+    # Try multiple paths to get the data pointer
+    ptr_addr = None
+    
+    # Path 1: Try the original _find_pointer_in_buf method
+    buf = vec.GetChildMemberWithName('buf')
+    if buf.IsValid():
+        try:
+            from .providers import _find_pointer_in_buf
+            ptr = _find_pointer_in_buf(buf)
+            if ptr and ptr.IsValid():
+                ptr_addr = ptr.GetValueAsUnsigned()
+        except:
+            pass
+    
+    # Path 2: Navigate buf -> inner -> ptr -> pointer (newer Rust)
+    if not ptr_addr and buf and buf.IsValid():
+        for path in [
+            ['inner', 'ptr', 'pointer'],
+            ['ptr', 'pointer'],
+            ['inner', 'ptr'],
+            ['ptr'],
+        ]:
+            node = buf
+            for step in path:
+                child = node.GetChildMemberWithName(step)
+                if child.IsValid():
+                    node = child
+                else:
+                    node = None
+                    break
+            if node and node.IsValid():
+                addr = node.GetValueAsUnsigned()
+                if addr and addr > 0x1000:  # Valid address check
+                    ptr_addr = addr
+                    break
+    
+    # Path 3: Try first child of buf as pointer
+    if not ptr_addr and buf and buf.IsValid():
+        for i in range(min(buf.GetNumChildren(), 5)):
+            child = buf.GetChildAtIndex(i)
+            if child.IsValid():
+                addr = child.GetValueAsUnsigned()
+                if addr and addr > 0x1000:
+                    ptr_addr = addr
+                    break
+    
+    # Path 4: Read raw memory at String's address
+    # String in memory: starts with ptr (8 bytes on 64-bit)
+    if not ptr_addr:
+        addr = value.GetLoadAddress()
+        if addr != 0xFFFFFFFFFFFFFFFF:  # LLDB_INVALID_ADDRESS
+            try:
+                import struct
                 error = lldb.SBError()
-                data = value.GetProcess().ReadMemory(ptr_addr, min(length, 1024), error)
-                if not error.Fail():
-                    return data.decode('utf-8', errors='replace')
-    except:
-        pass
+                # Read 24 bytes (ptr + cap + len on 64-bit)
+                data = process.ReadMemory(addr, 24, error)
+                if not error.Fail() and len(data) >= 8:
+                    ptr_addr = struct.unpack('Q', data[:8])[0]  # First 8 bytes is ptr
+            except:
+                pass
+    
+    # Now read the actual string data
+    if ptr_addr:
+        error = lldb.SBError()
+        data = process.ReadMemory(ptr_addr, min(length, 4096), error)
+        if not error.Fail():
+            return data.decode('utf-8', errors='replace')
     
     return f"<String len={length}>"
 
