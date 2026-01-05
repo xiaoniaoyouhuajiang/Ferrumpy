@@ -20,12 +20,47 @@ from typing import Any, Callable, Dict, List, Optional
 
 # Try to import vendored prompt_toolkit
 _HAS_PROMPT_TOOLKIT = False
-try:
-    # Add vendor directory to path
-    _vendor_dir = os.path.join(os.path.dirname(__file__), 'vendor')
-    if _vendor_dir not in sys.path:
-        sys.path.insert(0, _vendor_dir)
 
+def _get_vendor_paths():
+    """Get possible vendor directory paths using multiple resolution methods."""
+    paths = []
+
+    # Method 1: Relative to this file
+    if '__file__' in dir() or __file__:
+        try:
+            paths.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vendor'))
+        except Exception:
+            pass
+
+    # Method 2: Using the ferrumpy package path
+    try:
+        import ferrumpy
+        if hasattr(ferrumpy, '__path__'):
+            for p in ferrumpy.__path__:
+                paths.append(os.path.join(p, 'vendor'))
+        elif hasattr(ferrumpy, '__file__'):
+            paths.append(os.path.join(os.path.dirname(ferrumpy.__file__), 'vendor'))
+    except Exception:
+        pass
+
+    # Method 3: Check if vendor is a subpackage (installed properly)
+    try:
+        import ferrumpy.vendor
+        if hasattr(ferrumpy.vendor, '__path__'):
+            paths.extend(ferrumpy.vendor.__path__)
+    except Exception:
+        pass
+
+    return paths
+
+
+# Try to add vendor directories to sys.path
+for _vendor_path in _get_vendor_paths():
+    if os.path.isdir(_vendor_path) and _vendor_path not in sys.path:
+        sys.path.insert(0, _vendor_path)
+        break
+
+try:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import Completer, Completion
     from prompt_toolkit.document import Document
@@ -35,7 +70,23 @@ try:
     from prompt_toolkit.validation import ValidationError, Validator
     _HAS_PROMPT_TOOLKIT = True
 except ImportError:
-    pass
+    # Define dummy classes so code can still be parsed
+    class Completer:
+        pass
+
+    class Completion:
+        pass
+
+    class Document:
+        pass
+
+    class Validator:
+        pass
+
+    class ValidationError(Exception):
+        pass
+
+    _HAS_PROMPT_TOOLKIT = False
 
 
 def _should_use_enhanced_mode() -> bool:

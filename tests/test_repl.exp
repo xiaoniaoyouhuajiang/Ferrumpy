@@ -176,7 +176,7 @@ expect {
 expect ">>"
 send "fn format_vec<T: std::fmt::Debug>(v: Vec<T>) -> String { format!(\"{:?}\", v) }\r"
 expect ">>"
-send "format_vec(numbers.clone())\r"
+send "format_vec(numbers().clone())\r"
 expect {
     -re {\[1, 2, 3, 4, 5\]} {
         puts "✓ Function with format!() displays snapshot variable correctly"
@@ -193,7 +193,7 @@ expect {
 
 # Test 4c: Test format! with matrix (nested Vec)
 expect ">>"
-send "format_vec(matrix.clone())\r"
+send "format_vec(matrix().clone())\r"
 expect {
     -re {\[\[.*\]\]} {
         puts "✓ Function with format!() works with nested Vec (matrix)"
