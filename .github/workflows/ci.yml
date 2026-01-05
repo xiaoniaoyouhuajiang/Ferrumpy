@@ -182,17 +182,18 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Install maturin
-        run: pip install maturin
-
       - name: Build repl-worker binary
         run: |
           cargo build --release -p ferrumpy-repl-worker
           mkdir -p data/scripts
           cp target/release/ferrumpy-repl-worker data/scripts/
 
-      - name: Build and install FerrumPy
-        run: maturin develop --release
+      - name: Create virtualenv and install FerrumPy
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install maturin
+          maturin develop --release
 
       - name: Build test Rust sample
         run: |
@@ -203,7 +204,9 @@ jobs:
         run: brew install expect
 
       - name: Run integration tests
-        run: ./tests/run_tests.sh
+        run: |
+          source .venv/bin/activate
+          ./tests/run_tests.sh
 
   # Optional: Publish to PyPI on tags
   publish:
