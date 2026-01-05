@@ -38,14 +38,12 @@ been assigned, through the `key_binding` decorator.::
 from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
+from collections.abc import Coroutine, Hashable, Sequence
 from inspect import isawaitable
 from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
-    Coroutine,
-    Hashable,
-    Sequence,
     Tuple,
     TypeVar,
     Union,

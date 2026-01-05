@@ -5,8 +5,9 @@ Abstraction of CLI Input.
 from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Callable, ContextManager, Generator
+from typing import Callable, ContextManager
 
 from prompt_toolkit.key_binding import KeyPress
 

@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from asyncio import FIRST_COMPLETED, Future, ensure_future, sleep, wait
 from collections import deque
+from collections.abc import Hashable
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Dict, Hashable
+from typing import TYPE_CHECKING, Any, Callable, Dict
 
 from prompt_toolkit.application.current import get_app
 from prompt_toolkit.cursor_shapes import CursorShape

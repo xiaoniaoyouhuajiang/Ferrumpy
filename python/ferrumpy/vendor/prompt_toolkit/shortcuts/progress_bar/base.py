@@ -17,13 +17,10 @@ import os
 import signal
 import threading
 import traceback
+from collections.abc import Iterable, Iterator, Sequence, Sized
 from typing import (
     Callable,
     Generic,
-    Iterable,
-    Iterator,
-    Sequence,
-    Sized,
     TextIO,
     TypeVar,
     cast,

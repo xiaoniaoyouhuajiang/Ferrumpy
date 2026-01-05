@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable, Sequence
 from itertools import zip_longest
-from typing import TYPE_CHECKING, Callable, Iterable, Sequence, TypeVar, cast
+from typing import TYPE_CHECKING, Callable, TypeVar, cast
 from weakref import WeakKeyDictionary
 
 from prompt_toolkit.application.current import get_app

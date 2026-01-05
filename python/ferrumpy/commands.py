@@ -5,11 +5,11 @@ Provides the 'ferrumpy' command with subcommands and native Tab completion.
 Uses LLDB's ParsedCommand API for completion support.
 """
 
-import lldb
 import shlex
-from typing import Optional, List, Dict
 
-from .path_resolver import resolve_path, PathResolutionError
+import lldb
+
+from .path_resolver import PathResolutionError, resolve_path
 from .providers import format_value
 
 
@@ -20,7 +20,7 @@ def register_commands(debugger: lldb.SBDebugger):
     debugger.HandleCommand(
         'command script add -C variable-path -f ferrumpy.commands.ferrumpy_pp_command ferrumpy-pp'
     )
-    
+
     # Register main ferrumpy command (function-based, for subcommands)
     debugger.HandleCommand(
         'command script add -f ferrumpy.commands.ferrumpy_command ferrumpy'
@@ -30,31 +30,31 @@ def register_commands(debugger: lldb.SBDebugger):
 class FerrumPyPPCommand:
     """
     Pretty print command with Tab completion.
-    
+
     Usage: ferrumpy-pp <path>
-    
+
     Tab completion works for variable names and field paths.
     """
-    
+
     def __init__(self, debugger, internal_dict):
         self.debugger = debugger
-    
+
     def __call__(self, debugger, command, exe_ctx, result):
         """Execute the pp command."""
         args = shlex.split(command) if command else []
-        
+
         if not args:
             result.SetError("Usage: ferrumpy-pp <path>")
             return
-        
+
         frame = exe_ctx.GetFrame()
         if not frame.IsValid():
             result.SetError("No valid frame selected. Are you stopped at a breakpoint?")
             return
-        
+
         path = args[0]
         expand = "--expand" in args
-        
+
         try:
             value = resolve_path(frame, path)
             formatted = format_value(value, expand=expand)
@@ -62,10 +62,10 @@ class FerrumPyPPCommand:
             result.AppendMessage(f"({type_name}) {formatted}")
         except PathResolutionError as e:
             result.SetError(str(e))
-    
+
     def get_short_help(self):
         return "Pretty print a Rust variable or path expression with Tab completion"
-    
+
     def get_long_help(self):
         return """
 Usage: ferrumpy-pp <path> [--expand]
@@ -89,11 +89,11 @@ Note: Use Tab for variable name completion.
     def get_flags(self):
         """Return command flags (for LLDB command parsing)."""
         return 0
-    
+
     def handle_completion(self, current_line, cursor_pos, exe_ctx):
         """
         Handle Tab completion for the command.
-        
+
         This method is called when user presses Tab.
         Returns a dict with 'values' and optionally 'descriptions'.
         """
@@ -105,23 +105,23 @@ Note: Use Tab for variable name completion.
             prefix = ""
         else:
             prefix = parts[-1]
-        
+
         frame = exe_ctx.GetFrame()
         if not frame.IsValid():
             return {"values": []}
-        
+
         completions = []
         descriptions = []
-        
+
         if "." in prefix:
             # Field completion
             base_path = prefix.rsplit(".", 1)[0]
             partial_field = prefix.rsplit(".", 1)[1] if "." in prefix else ""
-            
+
             try:
                 value = resolve_path(frame, base_path)
                 type_obj = value.GetType()
-                
+
                 # Get fields
                 for i in range(type_obj.GetNumberOfFields()):
                     field = type_obj.GetFieldAtIndex(i)
@@ -131,7 +131,7 @@ Note: Use Tab for variable name completion.
                             full_path = f"{base_path}.{field_name}"
                             completions.append(full_path)
                             descriptions.append(field.GetType().GetName())
-            except:
+            except Exception:
                 pass
         else:
             # Variable name completion
@@ -141,7 +141,7 @@ Note: Use Tab for variable name completion.
                 if name and name.startswith(prefix):
                     completions.append(name)
                     descriptions.append(var.GetType().GetName())
-        
+
         return {
             "values": completions,
             "descriptions": descriptions
@@ -156,30 +156,30 @@ def ferrumpy_pp_command(
 ):
     """
     Pretty print command with native Tab completion.
-    
+
     This function is registered with -C variable-path for LLDB native completion.
     """
     args = shlex.split(command) if command else []
-    
+
     if not args:
         result.SetError("Usage: ferrumpy-pp <path> [--expand] [--deep] [--addr]")
         return
-    
+
     target = debugger.GetSelectedTarget()
     process = target.GetProcess()
     thread = process.GetSelectedThread()
     frame = thread.GetSelectedFrame()
-    
+
     if not frame.IsValid():
         result.SetError("No valid frame selected. Are you stopped at a breakpoint?")
         return
-    
+
     # Extract flags
     path = args[0]
     expand = "--expand" in args
     deep = "--deep" in args
     show_addr = "--addr" in args
-    
+
     try:
         value = resolve_path(frame, path)
         from .providers import FormatOptions
@@ -203,22 +203,22 @@ def ferrumpy_command(
 ):
     """Main ferrumpy command handler."""
     args = shlex.split(command)
-    
+
     if not args:
         args = ["help"]
-    
+
     subcommand = args[0]
     subargs = args[1:]
-    
+
     target = debugger.GetSelectedTarget()
     process = target.GetProcess()
     thread = process.GetSelectedThread()
     frame = thread.GetSelectedFrame()
-    
+
     if not frame.IsValid():
         result.SetError("No valid frame selected. Are you stopped at a breakpoint?")
         return
-    
+
     if subcommand == "help":
         _cmd_help(result)
     elif subcommand == "locals":
@@ -276,25 +276,25 @@ EXAMPLES:
 
 
 def _cmd_locals(
-    frame: lldb.SBFrame, 
+    frame: lldb.SBFrame,
     result: lldb.SBCommandReturnObject,
     args: list
 ):
     """Pretty print all local variables."""
     show_raw = "--raw" in args
     expand = "--expand" in args
-    
+
     variables = frame.GetVariables(
         True,   # arguments
         True,   # locals
         False,  # statics
         True    # in_scope_only
     )
-    
+
     if variables.GetSize() == 0:
         result.AppendMessage("No local variables in current scope.")
         return
-    
+
     output_lines = []
     for var in variables:
         name = var.GetName()
@@ -303,7 +303,7 @@ def _cmd_locals(
         else:
             formatted = format_value(var, expand=expand)
             output_lines.append(f"{name} = {formatted}")
-    
+
     result.AppendMessage("\n".join(output_lines))
 
 
@@ -315,17 +315,17 @@ def _cmd_args(frame: lldb.SBFrame, result: lldb.SBCommandReturnObject):
         False,  # statics
         True    # in_scope_only
     )
-    
+
     if variables.GetSize() == 0:
         result.AppendMessage("No arguments for current function.")
         return
-    
+
     output_lines = []
     for var in variables:
         name = var.GetName()
         formatted = format_value(var)
         output_lines.append(f"{name} = {formatted}")
-    
+
     result.AppendMessage("\n".join(output_lines))
 
 
@@ -338,23 +338,23 @@ def _cmd_pp(
     if not args:
         result.SetError("Usage: ferrumpy pp <path> [--expand] [--deep] [--addr]")
         return
-    
+
     # Extract flags
     show_raw = "--raw" in args
     expand = "--expand" in args
     deep = "--deep" in args
     show_addr = "--addr" in args
     path_args = [a for a in args if not a.startswith("--")]
-    
+
     if not path_args:
         result.SetError("Usage: ferrumpy pp <path> [--expand] [--deep] [--addr]")
         return
-    
+
     path = path_args[0]
-    
+
     try:
         value = resolve_path(frame, path)
-        
+
         if show_raw:
             result.AppendMessage(str(value))
         else:
@@ -363,7 +363,7 @@ def _cmd_pp(
             formatted = format_value(value, options=options)
             type_name = value.GetType().GetName()
             result.AppendMessage(f"({type_name}) {formatted}")
-            
+
     except PathResolutionError as e:
         result.SetError(str(e))
 
@@ -377,15 +377,15 @@ def _cmd_complete(
     if not args:
         result.SetError("Usage: ferrumpy complete <prefix>")
         return
-    
+
     prefix = args[0]
-    
+
     try:
         from . import bridge
-        
+
         # Get frame info for server
         frame_info = bridge.frame_to_info(frame)
-        
+
         # Find project root (look for Cargo.toml)
         import os
         line_entry = frame.GetLineEntry()
@@ -399,7 +399,7 @@ def _cmd_complete(
                     if os.path.exists(os.path.join(current, "Cargo.toml")):
                         break
                     current = os.path.dirname(current)
-                
+
                 if current and current != "/":
                     conn = bridge.get_connection()
                     if conn.initialize(current):
@@ -413,7 +413,7 @@ def _cmd_complete(
                                 else:
                                     result.AppendMessage(label)
                             return
-        
+
         # Fallback: show local variables matching prefix
         variables = frame.GetVariables(True, True, False, True)
         matches = []
@@ -422,13 +422,13 @@ def _cmd_complete(
             if name and name.startswith(prefix):
                 type_name = var.GetType().GetName()
                 matches.append(f"{name}: {type_name}")
-        
+
         if matches:
             for m in matches:
                 result.AppendMessage(m)
         else:
             result.AppendMessage(f"No completions for '{prefix}'")
-            
+
     except Exception as e:
         result.SetError(f"Completion error: {e}")
 
@@ -442,16 +442,16 @@ def _cmd_type(
     if not args:
         result.SetError("Usage: ferrumpy type <expr>")
         return
-    
+
     expr = args[0]
-    
+
     try:
         value = resolve_path(frame, expr)
         type_obj = value.GetType()
-        
+
         result.AppendMessage(f"Type: {type_obj.GetName()}")
         result.AppendMessage(f"Size: {type_obj.GetByteSize()} bytes")
-        
+
         # Show fields for structs
         num_fields = type_obj.GetNumberOfFields()
         if num_fields > 0:
@@ -462,7 +462,7 @@ def _cmd_type(
                     field_name = field.GetName() or f"[{i}]"
                     field_type = field.GetType().GetName()
                     result.AppendMessage(f"  {field_name}: {field_type}")
-                    
+
     except PathResolutionError as e:
         result.SetError(str(e))
 
@@ -480,10 +480,10 @@ def _cmd_eval(
         result.AppendMessage("  ferrumpy eval x * 2")
         result.AppendMessage("  ferrumpy eval a == b")
         return
-    
+
     # Join all args as the expression (to handle spaces)
     expr = " ".join(args)
-    
+
     try:
         # Try FFI first (faster, no subprocess)
         from . import ffi_bridge
@@ -501,7 +501,7 @@ def _cmd_eval(
                     from . import bridge
                     rust_type = bridge._simplify_type_name(type_name)
                     variables[name] = {"type": rust_type, "value": value}
-            
+
             eval_result = ffi_bridge.eval_expression_ffi(expr, variables)
             if eval_result:
                 if "error" in eval_result:
@@ -511,11 +511,11 @@ def _cmd_eval(
                     value_type = eval_result.get("value_type", "")
                     result.AppendMessage(f"({value_type}) {value}")
                 return
-        
+
         # Fallback to subprocess (JSON-RPC)
         from . import bridge
         frame_info = bridge.frame_to_info(frame)
-        
+
         import os
         line_entry = frame.GetLineEntry()
         project_root = None
@@ -529,12 +529,12 @@ def _cmd_eval(
                         project_root = current
                         break
                     current = os.path.dirname(current)
-        
+
         if project_root:
             conn = bridge.get_connection()
             if conn.initialize(project_root):
                 eval_result = conn.eval(frame_info, expr)
-                
+
                 if eval_result:
                     if "error" in eval_result:
                         result.SetError(eval_result["error"])
@@ -543,7 +543,7 @@ def _cmd_eval(
                         value_type = eval_result.get("value_type", "")
                         result.AppendMessage(f"({value_type}) {value}")
                     return
-        
+
         # Final fallback: use LLDB's expression evaluator
         result.AppendMessage("(Note: using LLDB fallback)")
         sbval = frame.EvaluateExpression(expr)
@@ -551,7 +551,7 @@ def _cmd_eval(
             result.AppendMessage(str(sbval))
         else:
             result.SetError(f"Failed to evaluate: {expr}")
-            
+
     except Exception as e:
         result.SetError(f"Eval error: {e}")
 
@@ -563,37 +563,37 @@ def _cmd_repl(
     debugger: lldb.SBDebugger
 ):
     """Start an interactive REPL with captured variables."""
+    from . import repl_ui
     from .repl import EmbeddedReplSession
     from .serializer import serialize_frame
-    from . import repl_ui
-    
+
     # Check for --test flag (non-interactive mode for testing)
     test_mode = "--test" in args
     # Check for --simple flag (force simple mode without prompt_toolkit)
     simple_mode = "--simple" in args
-    
+
     result.AppendMessage("Starting FerrumPy Embedded REPL...")
     result.AppendMessage("Capturing variables from current frame...")
-    
+
     # Serialize current frame for display
     data = serialize_frame(frame)
     num_vars = len(data.get('variables', {}))
     result.AppendMessage(f"Captured {num_vars} variables")
-    
+
     # Show available variables
     result.AppendMessage("\nVariables available:")
     for name, type_name in list(data.get('types', {}).items())[:10]:
         result.AppendMessage(f"  {name}: {type_name}")
     if len(data.get('types', {})) > 10:
         result.AppendMessage(f"  ... and {len(data.get('types', {})) - 10} more")
-    
+
     # Create embedded REPL session
     try:
         session = EmbeddedReplSession(frame)
         result.AppendMessage("\nInitializing REPL engine...")
         init_result = session.initialize()
         result.AppendMessage(f"REPL ready. {init_result}")
-        
+
         # In test mode, exit immediately after initialization
         if test_mode:
             result.AppendMessage("\n" + "=" * 50)
@@ -603,19 +603,19 @@ def _cmd_repl(
             result.AppendMessage("Test mode: REPL initialized successfully, exiting.")
             result.AppendMessage("REPL session ended.")
             return
-        
+
         # Try enhanced mode with prompt_toolkit
         if not simple_mode and repl_ui.is_prompt_toolkit_available():
             # Use enhanced REPL
             def eval_callback(code: str) -> str:
                 return session.eval(code)
-            
+
             def output_callback(msg: str):
                 print(msg)
-            
+
             def error_callback(msg: str):
                 print(_format_error(msg))
-            
+
             success = repl_ui.run_enhanced_repl(
                 session=session._session,  # Get underlying PyReplSession
                 snapshot_data=data,
@@ -623,25 +623,25 @@ def _cmd_repl(
                 output_callback=output_callback,
                 error_callback=error_callback,
             )
-            
+
             if success:
                 result.AppendMessage("REPL session ended.")
                 return
             # Fall through to simple mode if enhanced mode failed
-        
+
         # Simple mode (fallback)
         result.AppendMessage("\n" + "=" * 50)
         result.AppendMessage("FerrumPy REPL - Simple Mode")
         result.AppendMessage("Commands: :q (quit), :vars (show variables)")
         result.AppendMessage("Tip: Install prompt_toolkit for enhanced features")
         result.AppendMessage("=" * 50 + "\n")
-        
+
         # Simple interactive loop
         buffer = []
         prev_line_empty = False
         last_interrupt_time = None
         INTERRUPT_TIMEOUT = 2.0  # 2 seconds window for second Ctrl+C
-        
+
         while True:
             try:
                 # Show continuation prompt if buffer not empty
@@ -653,24 +653,24 @@ def _cmd_repl(
             except KeyboardInterrupt:
                 import time
                 current_time = time.time()
-                
+
                 # Check if this is a second Ctrl+C within timeout
                 if last_interrupt_time and (current_time - last_interrupt_time) < INTERRUPT_TIMEOUT:
                     result.AppendMessage("\n\nExiting REPL...")
                     break
-                
+
                 # First Ctrl+C: interrupt running code
                 last_interrupt_time = current_time
                 result.AppendMessage("\nKeyboardInterrupt")
                 result.AppendMessage("(Press Ctrl+C again within 2 seconds to exit)")
-                
+
                 # Try to interrupt any running evaluation
                 try:
                     session._session.interrupt()
                     result.AppendMessage("Evaluation interrupted.")
                 except Exception as e:
                     result.AppendMessage(f"Failed to interrupt: {e}")
-                
+
                 # Clear buffer and reset state
                 buffer = []
                 prev_line_empty = False
@@ -678,7 +678,7 @@ def _cmd_repl(
             except EOFError:
                 result.AppendMessage("\nExiting REPL...")
                 break
-            
+
             # Special case: handle single line commands even in buffer
             stripped_line = line.strip()
             if not buffer and stripped_line in (':q', ':quit', ':exit'):
@@ -698,7 +698,7 @@ def _cmd_repl(
 
             buffer.append(line)
             full_code = "\n".join(buffer)
-            
+
             # Check if code is complete
             try:
                 # Force submit on consecutive empty lines
@@ -713,7 +713,7 @@ def _cmd_repl(
 
             if validity == "Incomplete":
                 continue
-            
+
             # Reset buffer and state for next command
             buffer = []
             prev_line_empty = False
@@ -727,9 +727,9 @@ def _cmd_repl(
                     print(eval_result)
             except Exception as e:
                 print(_format_error(str(e)))
-        
+
         result.AppendMessage("REPL session ended.")
-        
+
     except Exception as e:
         result.SetError(f"Failed to create REPL: {e}")
 

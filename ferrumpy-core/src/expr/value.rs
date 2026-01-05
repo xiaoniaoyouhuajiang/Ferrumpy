@@ -15,7 +15,7 @@ pub enum Value {
     I64(i64),
     I128(i128),
     Isize(isize),
-    
+
     // Unsigned integers
     U8(u8),
     U16(u16),
@@ -23,26 +23,23 @@ pub enum Value {
     U64(u64),
     U128(u128),
     Usize(usize),
-    
+
     // Floating point
     F32(f32),
     F64(f64),
-    
+
     // Other primitives
     Bool(bool),
     Char(char),
-    
+
     // String types
     String(String),
-    
+
     // Unit
     Unit,
-    
+
     // Reference to complex type (handle to SBValue)
-    Ref {
-        address: u64,
-        type_name: String,
-    },
+    Ref { address: u64, type_name: String },
 }
 
 impl Value {
@@ -70,31 +67,60 @@ impl Value {
             Value::Ref { .. } => "ref",
         }
     }
-    
+
     /// Check if this is a numeric type
     pub fn is_numeric(&self) -> bool {
-        matches!(self, 
-            Value::I8(_) | Value::I16(_) | Value::I32(_) | Value::I64(_) | Value::I128(_) | Value::Isize(_) |
-            Value::U8(_) | Value::U16(_) | Value::U32(_) | Value::U64(_) | Value::U128(_) | Value::Usize(_) |
-            Value::F32(_) | Value::F64(_)
+        matches!(
+            self,
+            Value::I8(_)
+                | Value::I16(_)
+                | Value::I32(_)
+                | Value::I64(_)
+                | Value::I128(_)
+                | Value::Isize(_)
+                | Value::U8(_)
+                | Value::U16(_)
+                | Value::U32(_)
+                | Value::U64(_)
+                | Value::U128(_)
+                | Value::Usize(_)
+                | Value::F32(_)
+                | Value::F64(_)
         )
     }
-    
+
     /// Check if this is an integer type
     pub fn is_integer(&self) -> bool {
-        matches!(self,
-            Value::I8(_) | Value::I16(_) | Value::I32(_) | Value::I64(_) | Value::I128(_) | Value::Isize(_) |
-            Value::U8(_) | Value::U16(_) | Value::U32(_) | Value::U64(_) | Value::U128(_) | Value::Usize(_)
+        matches!(
+            self,
+            Value::I8(_)
+                | Value::I16(_)
+                | Value::I32(_)
+                | Value::I64(_)
+                | Value::I128(_)
+                | Value::Isize(_)
+                | Value::U8(_)
+                | Value::U16(_)
+                | Value::U32(_)
+                | Value::U64(_)
+                | Value::U128(_)
+                | Value::Usize(_)
         )
     }
-    
+
     /// Check if this is a signed integer
     pub fn is_signed(&self) -> bool {
-        matches!(self,
-            Value::I8(_) | Value::I16(_) | Value::I32(_) | Value::I64(_) | Value::I128(_) | Value::Isize(_)
+        matches!(
+            self,
+            Value::I8(_)
+                | Value::I16(_)
+                | Value::I32(_)
+                | Value::I64(_)
+                | Value::I128(_)
+                | Value::Isize(_)
         )
     }
-    
+
     /// Convert to i128 if integer
     pub fn to_i128(&self) -> Option<i128> {
         match self {
@@ -113,7 +139,7 @@ impl Value {
             _ => None,
         }
     }
-    
+
     /// Convert to f64 if floating point
     pub fn to_f64(&self) -> Option<f64> {
         match self {
@@ -122,7 +148,7 @@ impl Value {
             _ => None,
         }
     }
-    
+
     /// Convert to bool
     pub fn to_bool(&self) -> Option<bool> {
         match self {
@@ -161,18 +187,21 @@ impl fmt::Display for Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_value_type_names() {
         assert_eq!(Value::I32(42).type_name(), "i32");
         assert_eq!(Value::Bool(true).type_name(), "bool");
         assert_eq!(Value::String("hello".to_string()).type_name(), "String");
     }
-    
+
     #[test]
     fn test_value_display() {
         assert_eq!(format!("{}", Value::I32(42)), "42");
         assert_eq!(format!("{}", Value::Bool(true)), "true");
-        assert_eq!(format!("{}", Value::String("hello".to_string())), "\"hello\"");
+        assert_eq!(
+            format!("{}", Value::String("hello".to_string())),
+            "\"hello\""
+        );
     }
 }

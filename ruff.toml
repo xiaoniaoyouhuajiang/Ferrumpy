@@ -1,0 +1,28 @@
+# FerrumPy ruff configuration
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+]
+
+ignore = [
+    "E501", # line too long
+    "N801", # class name should use CapWords
+    "N802", # function name should be lowercase
+    "N806", # variable in function should be lowercase
+    "N815", # variable in class scope should not be mixedCase
+    "N816", # variable in global scope should not be mixedCase
+    "N817", # CamelCase imported as acronym
+    "UP006", # Use `dict` instead of `Dict` (keep for compatibility)
+    "UP035", # `typing.Dict` is deprecated (keep for compatibility)
+]
+
+[lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"tests/*.py" = ["F401", "F841"]
+"python/ferrumpy/vendor/**/*" = ["ALL"]  # Ignore all errors in vendored code

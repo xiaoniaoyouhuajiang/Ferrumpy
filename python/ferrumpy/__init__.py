@@ -22,8 +22,7 @@ from . import path_resolver
 
 # These require lldb
 if _HAS_LLDB:
-    from . import commands
-    from . import providers
+    from . import commands, providers
 
 
 def __lldb_init_module(debugger, internal_dict: dict):

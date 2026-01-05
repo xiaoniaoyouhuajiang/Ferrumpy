@@ -12,7 +12,8 @@ from __future__ import annotations
 import io
 import os
 import sys
-from typing import Callable, Dict, Hashable, Iterable, Sequence, TextIO, Tuple
+from collections.abc import Hashable, Iterable, Sequence
+from typing import Callable, Dict, TextIO, Tuple
 
 from prompt_toolkit.cursor_shapes import CursorShape
 from prompt_toolkit.data_structures import Size

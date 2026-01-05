@@ -16,9 +16,10 @@ if not SPHINX_AUTODOC_RUNNING:
     import msvcrt
     from ctypes import windll
 
+from collections.abc import Iterable, Iterator
 from ctypes import Array, byref, pointer
 from ctypes.wintypes import DWORD, HANDLE
-from typing import Callable, ContextManager, Iterable, Iterator, TextIO
+from typing import Callable, ContextManager, TextIO
 
 from prompt_toolkit.eventloop import run_in_executor_with_context
 from prompt_toolkit.eventloop.win32 import create_win32_event, wait_for_handles

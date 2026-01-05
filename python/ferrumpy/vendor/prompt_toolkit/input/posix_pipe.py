@@ -5,8 +5,9 @@ import sys
 assert sys.platform != "win32"
 
 import os
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import ContextManager, Iterator, TextIO, cast
+from typing import ContextManager, TextIO, cast
 
 from ..utils import DummyContext
 from .base import PipeInput

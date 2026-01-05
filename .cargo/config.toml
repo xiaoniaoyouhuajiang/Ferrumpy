@@ -6,7 +6,7 @@ PYO3_USE_ABI3_FORWARD_COMPATIBILITY = "1"
 
 # macOS (Apple Silicon)
 [target.aarch64-apple-darwin]
-rustflags = ["-C", "link-arg=-fuse-ld=/opt/homebrew/bin/ld64.lld"]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
 
 # macOS (Intel) - uncomment if needed
 # [target.x86_64-apple-darwin]

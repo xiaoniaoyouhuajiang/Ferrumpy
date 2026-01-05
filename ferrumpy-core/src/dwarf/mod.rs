@@ -18,7 +18,7 @@ pub enum DwarfError {
 /// - `core::option::Option<alloc::string::String>` -> `Option<String>`
 pub fn dwarf_type_to_rust(dwarf_name: &str) -> Result<String, DwarfError> {
     let mut result = dwarf_name.to_string();
-    
+
     // Standard library path replacements
     let replacements = [
         ("alloc::string::", ""),
@@ -34,18 +34,18 @@ pub fn dwarf_type_to_rust(dwarf_name: &str) -> Result<String, DwarfError> {
         ("std::collections::", ""),
         ("std::sync::", ""),
     ];
-    
+
     for (from, to) in replacements {
         result = result.replace(from, to);
     }
-    
+
     // Remove hash suffixes (e.g., ::h1a2b3c4d)
     if let Some(pos) = result.find("::h") {
         if result[pos + 3..].chars().all(|c| c.is_ascii_hexdigit()) {
             result = result[..pos].to_string();
         }
     }
-    
+
     Ok(result)
 }
 
@@ -70,7 +70,7 @@ impl VariableInfo {
             value: String::new(),
         })
     }
-    
+
     pub fn with_value(name: String, type_name: String, value: String) -> Result<Self, DwarfError> {
         let rust_type = dwarf_type_to_rust(&type_name)?;
         Ok(Self {
@@ -88,8 +88,14 @@ mod tests {
 
     #[test]
     fn test_dwarf_type_to_rust() {
-        assert_eq!(dwarf_type_to_rust("alloc::string::String").unwrap(), "String");
-        assert_eq!(dwarf_type_to_rust("alloc::vec::Vec<i32>").unwrap(), "Vec<i32>");
+        assert_eq!(
+            dwarf_type_to_rust("alloc::string::String").unwrap(),
+            "String"
+        );
+        assert_eq!(
+            dwarf_type_to_rust("alloc::vec::Vec<i32>").unwrap(),
+            "Vec<i32>"
+        );
         assert_eq!(
             dwarf_type_to_rust("core::option::Option<alloc::string::String>").unwrap(),
             "Option<String>"

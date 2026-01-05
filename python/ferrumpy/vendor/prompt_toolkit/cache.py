@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Hashable
 from functools import wraps
-from typing import Any, Callable, Dict, Generic, Hashable, Tuple, TypeVar, cast
+from typing import Any, Callable, Dict, Generic, Tuple, TypeVar, cast
 
 __all__ = [
     "SimpleCache",

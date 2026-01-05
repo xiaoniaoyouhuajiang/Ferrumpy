@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Callable, Iterable, Sequence
+from collections.abc import Iterable, Sequence
+from typing import Callable
 
 from prompt_toolkit.application.current import get_app
 from prompt_toolkit.filters import Condition

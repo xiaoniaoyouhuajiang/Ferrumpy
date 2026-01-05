@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Iterable, List, Tuple, Union, cast
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Any, Callable, List, Tuple, Union, cast
 
 from prompt_toolkit.mouse_events import MouseEvent
 
 if TYPE_CHECKING:
-    from typing_extensions import Protocol
-
     from prompt_toolkit.key_binding.key_bindings import NotImplementedOrNone
+    from typing_extensions import Protocol
 
 __all__ = [
     "OneStyleAndTextTuple",

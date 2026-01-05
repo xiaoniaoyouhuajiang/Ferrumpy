@@ -5,7 +5,8 @@ Parser for VT100 input stream.
 from __future__ import annotations
 
 import re
-from typing import Callable, Dict, Generator
+from collections.abc import Generator
+from typing import Callable, Dict
 
 from ..key_binding.key_processor import KeyPress
 from ..keys import Keys

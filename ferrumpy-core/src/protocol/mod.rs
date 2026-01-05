@@ -2,9 +2,9 @@
 //!
 //! Defines the communication protocol between Python bridge and ferrumpy-server.
 
-use serde::{Deserialize, Serialize};
 use crate::dwarf::VariableInfo;
 use crate::lsp::CompletionItem;
+use serde::{Deserialize, Serialize};
 
 /// Frame information from LLDB
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,10 +25,8 @@ pub struct FrameInfo {
 pub enum Request {
     /// Initialize the server for a project
     #[serde(rename = "initialize")]
-    Initialize {
-        project_root: String,
-    },
-    
+    Initialize { project_root: String },
+
     /// Request completions
     #[serde(rename = "complete")]
     Complete {
@@ -36,28 +34,19 @@ pub enum Request {
         input: String,
         cursor: usize,
     },
-    
+
     /// Request type information
     #[serde(rename = "type")]
-    TypeInfo {
-        frame: FrameInfo,
-        expr: String,
-    },
-    
+    TypeInfo { frame: FrameInfo, expr: String },
+
     /// Evaluate an expression
     #[serde(rename = "eval")]
-    Eval {
-        frame: FrameInfo,
-        expr: String,
-    },
-    
+    Eval { frame: FrameInfo, expr: String },
+
     /// Request hover documentation
     #[serde(rename = "hover")]
-    Hover {
-        frame: FrameInfo,
-        path: String,
-    },
-    
+    Hover { frame: FrameInfo, path: String },
+
     /// Shutdown the server
     #[serde(rename = "shutdown")]
     Shutdown,
@@ -67,40 +56,27 @@ pub enum Request {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Response {
-    Completions {
-        completions: Vec<CompletionItem>,
-    },
-    TypeInfo {
-        type_name: String,
-    },
-    EvalResult {
-        value: String,
-        value_type: String,
-    },
-    Hover {
-        content: Option<String>,
-    },
-    Success {
-        ok: bool,
-    },
-    Error {
-        error: String,
-    },
+    Completions { completions: Vec<CompletionItem> },
+    TypeInfo { type_name: String },
+    EvalResult { value: String, value_type: String },
+    Hover { content: Option<String> },
+    Success { ok: bool },
+    Error { error: String },
 }
 
 impl Response {
     pub fn success() -> Self {
         Response::Success { ok: true }
     }
-    
+
     pub fn error(msg: impl Into<String>) -> Self {
         Response::Error { error: msg.into() }
     }
-    
+
     pub fn completions(items: Vec<CompletionItem>) -> Self {
         Response::Completions { completions: items }
     }
-    
+
     pub fn eval_result(value: impl Into<String>, value_type: impl Into<String>) -> Self {
         Response::EvalResult {
             value: value.into(),
@@ -144,22 +120,20 @@ mod tests {
             input: "user.".to_string(),
             cursor: 5,
         };
-        
+
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"method\":\"complete\""));
     }
-    
+
     #[test]
     fn test_response_serialize() {
-        let resp = Response::completions(vec![
-            CompletionItem {
-                label: "name".to_string(),
-                kind: crate::lsp::CompletionKind::Field,
-                detail: Some("String".to_string()),
-                documentation: None,
-            },
-        ]);
-        
+        let resp = Response::completions(vec![CompletionItem {
+            label: "name".to_string(),
+            kind: crate::lsp::CompletionKind::Field,
+            detail: Some("String".to_string()),
+            documentation: None,
+        }]);
+
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"label\":\"name\""));
     }

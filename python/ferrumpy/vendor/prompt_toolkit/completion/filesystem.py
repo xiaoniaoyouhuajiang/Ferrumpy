@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from typing import Callable, Iterable
+from collections.abc import Iterable
+from typing import Callable
 
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document

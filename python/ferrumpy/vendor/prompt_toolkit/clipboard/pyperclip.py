@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pyperclip
-
 from prompt_toolkit.selection import SelectionType
 
 from .base import Clipboard, ClipboardData
