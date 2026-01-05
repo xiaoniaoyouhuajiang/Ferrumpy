@@ -23,7 +23,6 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 
-
 class PathResolutionError(Exception):
     """Error during path resolution."""
     pass
