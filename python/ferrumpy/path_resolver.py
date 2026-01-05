@@ -20,11 +20,7 @@ except ImportError:
 
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List, Optional
-
-# Use string annotations to avoid import-time errors when lldb is unavailable
-if TYPE_CHECKING:
-    import lldb as lldb_types
+from typing import List, Optional
 
 
 
