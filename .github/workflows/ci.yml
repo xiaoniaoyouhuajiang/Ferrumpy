@@ -203,9 +203,21 @@ jobs:
       - name: Install expect
         run: brew install expect
 
+      - name: Debug Python versions
+        run: |
+          echo "=== Python version info ==="
+          which python
+          python --version
+          echo "=== LLDB Python info ==="
+          lldb --version
+          # Check what Python LLDB uses
+          echo 'script import sys; print(f"LLDB Python: {sys.version}")' | lldb
+
       - name: Run integration tests
         run: |
           source .venv/bin/activate
+          # Set PYTHONPATH to include our installed package
+          export PYTHONPATH="$(pwd)/python:$PYTHONPATH"
           ./tests/run_tests.sh
 
   # Optional: Publish to PyPI on tags
