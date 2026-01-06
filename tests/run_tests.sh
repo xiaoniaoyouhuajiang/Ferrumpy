@@ -194,7 +194,7 @@ PYTHON_OK=true
 LLDB_OK=true
 REPL_OK=true
 
-if [ "$1" != "--lldb" ] && [ "$1" != "--repl" ]; then
+if [ "$1" != "--lldb" ] && [ "$1" != "--repl" ] && [ "$1" != "--skip-repl" ]; then
     run_python_tests || PYTHON_OK=false
 fi
 
@@ -202,8 +202,15 @@ if [ "$1" != "--python" ] && [ "$1" != "--repl" ]; then
     run_lldb_tests || LLDB_OK=false
 fi
 
-if [ "$1" == "--repl" ] || [ "$1" == "--all" ] || [ -z "$1" ]; then
-    run_repl_tests || REPL_OK=false
+# Skip REPL tests if --skip-repl flag is passed (for CI environments with issues)
+if [ "$1" != "--skip-repl" ]; then
+    if [ "$1" == "--repl" ] || [ "$1" == "--all" ] || [ -z "$1" ]; then
+        run_repl_tests || REPL_OK=false
+    fi
+else
+    echo
+    echo "--- REPL Tests (SKIPPED) ---"
+    echo "REPL tests skipped via --skip-repl flag"
 fi
 
 echo
