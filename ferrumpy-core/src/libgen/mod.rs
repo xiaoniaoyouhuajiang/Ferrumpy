@@ -123,10 +123,35 @@ fn generate_cargo_toml(project_path: &Path, add_serde: bool) -> Result<String> {
                     toml::Value::String(version) => {
                         cargo.push_str(&format!("{} = \"{}\"\n", name, version));
                     }
-                    toml::Value::Table(_t) => {
-                        // Handle complex dependencies
-                        let dep_str = toml::to_string(value)?;
-                        cargo.push_str(&format!("{} = {}\n", name, dep_str.trim()));
+                    toml::Value::Table(t) => {
+                        // Handle complex dependencies - serialize as inline table
+                        // We need to manually format as inline table since toml::to_string
+                        // outputs multi-line format that breaks when used inline
+                        let mut parts = Vec::new();
+                        for (key, val) in t {
+                            let val_str = match val {
+                                toml::Value::String(s) => format!("\"{}\"", s),
+                                toml::Value::Array(arr) => {
+                                    let items: Vec<String> = arr
+                                        .iter()
+                                        .map(|v| match v {
+                                            toml::Value::String(s) => format!("\"{}\"", s),
+                                            _ => v.to_string(),
+                                        })
+                                        .collect();
+                                    format!("[{}]", items.join(", "))
+                                }
+                                toml::Value::Boolean(b) => b.to_string(),
+                                toml::Value::Integer(i) => i.to_string(),
+                                toml::Value::Float(f) => f.to_string(),
+                                _ => {
+                                    // For nested tables, use toml serialization
+                                    toml::to_string(val).unwrap_or_default().trim().to_string()
+                                }
+                            };
+                            parts.push(format!("{} = {}", key, val_str));
+                        }
+                        cargo.push_str(&format!("{} = {{ {} }}\n", name, parts.join(", ")));
                     }
                     _ => {}
                 }
