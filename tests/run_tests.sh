@@ -60,7 +60,7 @@ run_lldb_tests() {
     local tmpfile
     tmpfile=$(mktemp)
     lldb -b target/debug/rust_sample \
-        -o "command script import /Users/wangjiajie/software/FerrumPy/python/ferrumpy" \
+        -o "command script import $PROJECT_ROOT/python/ferrumpy" \
         -o "b main.rs:80" \
         -o "run" \
         -o "ferrumpy pp simple_string" \
@@ -82,6 +82,13 @@ run_lldb_tests() {
     local output
     output=$(cat "$tmpfile")
     rm -f "$tmpfile"
+    
+    # Debug: show full output if FERRUMPY_DEBUG is set or no expected patterns found
+    if [ -n "$FERRUMPY_DEBUG" ] || ! echo "$output" | grep -q "FerrumPy"; then
+        echo "=== LLDB Full Output ==="
+        echo "$output"
+        echo "=== End LLDB Output ==="
+    fi
     
     # Check each expected output
     local passed=0

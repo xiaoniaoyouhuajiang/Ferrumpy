@@ -213,12 +213,27 @@ jobs:
           lldb --version
           # Check what Python LLDB uses
           echo 'script import sys; print(f"LLDB Python: {sys.version}")' | lldb
+          echo "=== Rust toolchain info ==="
+          which rustc
+          rustc --version
+          which cargo
+          cargo --version
+          echo "=== PATH ==="
+          echo $PATH
+          echo "=== Check if rustc is visible from LLDB script ==="
+          echo 'script import subprocess; print(subprocess.run(["which", "rustc"], capture_output=True, text=True).stdout)' | lldb
 
       - name: Run integration tests
         run: |
           source .venv/bin/activate
+          # Ensure Rust toolchain is in PATH for evcxr subprocess
+          export PATH="$HOME/.cargo/bin:$PATH"
           # Set PYTHONPATH to include our installed package
           export PYTHONPATH="$(pwd)/python:$PYTHONPATH"
+          # Enable debug output to show full LLDB output
+          export FERRUMPY_DEBUG=1
+          # Debug: print environment
+          echo "Running tests with PATH: $PATH"
           ./tests/run_tests.sh
 
   # Optional: Publish to PyPI on tags
