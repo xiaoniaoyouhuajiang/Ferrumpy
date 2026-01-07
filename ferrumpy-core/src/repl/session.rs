@@ -316,6 +316,73 @@ impl ReplSession {
         true
     }
 
+    /// Check if a type is likely to be available in the generated code scope
+    /// Types that are NOT likely available:
+    /// - Iterator adapters like Skip, Take, Map, Filter, etc. (from std::iter)
+    /// - Environment types like Args (from std::env)
+    /// - File/IO types that aren't commonly re-exported
+    /// - Raw pointers and references
+    fn is_type_likely_available(&self, type_hint: &str) -> bool {
+        // List of type patterns that are unlikely to be in scope
+        let unsupported_patterns = [
+            // Iterator adapters (std::iter)
+            "Skip<",
+            "Take<",
+            "Map<",
+            "Filter<",
+            "FilterMap<",
+            "Enumerate<",
+            "Peekable<",
+            "Chain<",
+            "Zip<",
+            "Cycle<",
+            "Fuse<",
+            "Rev<",
+            "Flatten<",
+            "FlatMap<",
+            "Scan<",
+            "TakeWhile<",
+            "SkipWhile<",
+            "StepBy<",
+            "Inspect<",
+            "Cloned<",
+            "Copied<",
+            // Environment types (std::env)
+            "Args",
+            "ArgsOs",
+            "Vars",
+            "VarsOs",
+            // IO types that may not be in scope
+            "Stdin",
+            "Stdout",
+            "Stderr",
+            "BufReader<",
+            "BufWriter<",
+            "Lines<",
+            "Bytes<",
+            "Chars<",
+            // Raw pointers and references (can't be deserialized)
+            "*const",
+            "*mut",
+            "&'", // Any reference with explicit lifetime
+        ];
+
+        for pattern in &unsupported_patterns {
+            if type_hint.contains(pattern) {
+                return false;
+            }
+        }
+
+        // Check for types that look like they're from external crates but not imported
+        // Heuristic: if it contains "::" it should either:
+        // 1. Start with "std::", "core::", "alloc::" (std library - usually available via prelude)
+        // 2. Or be from ferrumpy_snapshot (companion lib)
+        // Otherwise it might not be in scope
+
+        // For now, allow all other types - the list above catches the most common issues
+        true
+    }
+
     /// Load variables from serialized JSON snapshot using optimized single-compilation mode
     /// with TYPE-AWARE code generation for real Rust types
     pub fn load_snapshot(&mut self, json_data: &str, type_hints: &str) -> Result<String> {
@@ -365,7 +432,29 @@ impl ReplSession {
             all_code.push('\n');
         }
         all_code.push_str("use serde::{Serialize, Deserialize};\n");
-        let module_code = self.generate_snapshot_module(&vars)?;
+
+        // Filter variables: skip those with unrecognized types that would cause compilation errors
+        let (supported_vars, skipped_vars): (Vec<_>, Vec<_>) = vars
+            .into_iter()
+            .partition(|(_, _, ty)| self.is_type_likely_available(ty));
+
+        // Warn about skipped variables
+        if !skipped_vars.is_empty() {
+            eprintln!(
+                "[FerrumPy] Warning: Skipping {} variable(s) with unsupported types:",
+                skipped_vars.len()
+            );
+            for (name, _, ty) in &skipped_vars {
+                eprintln!("  - {}: {} (type not in scope)", name, ty);
+            }
+            eprintln!("[FerrumPy] Tip: These are likely iterator or low-level types that can't be serialized.");
+        }
+
+        if supported_vars.is_empty() {
+            return Ok("Snapshot loaded (no supported variables)".to_string());
+        }
+
+        let module_code = self.generate_snapshot_module(&supported_vars)?;
         all_code.push_str(&module_code);
         all_code.push('\n');
         all_code.push_str("use ferrumpy_vars::*;\n");
@@ -384,16 +473,29 @@ macro_rules! restore {
         self.eval(&all_code)?;
         self.initialized = true;
 
-        let sample_names: Vec<&str> = vars.iter().take(5).map(|(n, _, _)| n.as_str()).collect();
+        let sample_names: Vec<&str> = supported_vars
+            .iter()
+            .take(5)
+            .map(|(n, _, _)| n.as_str())
+            .collect();
         Ok(format!(
-            "Snapshot loaded with {} items. Access: {}{}",
-            vars.len(),
+            "Snapshot loaded with {} items{}. Access: {}{}",
+            supported_vars.len(),
+            if !skipped_vars.is_empty() {
+                format!(" ({} skipped)", skipped_vars.len())
+            } else {
+                String::new()
+            },
             sample_names
                 .iter()
                 .map(|n| format!("{}()", n))
                 .collect::<Vec<_>>()
                 .join(", "),
-            if vars.len() > 5 { ", ..." } else { "" }
+            if supported_vars.len() > 5 {
+                ", ..."
+            } else {
+                ""
+            }
         ))
     }
 

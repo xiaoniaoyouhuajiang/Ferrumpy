@@ -9,7 +9,8 @@ use anyhow::Result;
 use quote::ToTokens;
 use std::path::Path;
 use syn::{
-    parse_file, visit_mut::VisitMut, Attribute, Item, ItemEnum, ItemFn, ItemMod, ItemStruct,
+    parse_file, visit_mut::VisitMut, Attribute, Fields, Item, ItemEnum, ItemFn, ItemMod,
+    ItemStruct, Type,
 };
 
 /// Transform a source file to lib format
@@ -26,6 +27,9 @@ pub fn transform_module(source: &str, add_serde: bool) -> Result<String> {
 fn transform_source(source: &str, remove_main: bool, add_serde: bool) -> Result<String> {
     let mut ast = parse_file(source)?;
 
+    // Filter out problematic inner attributes that don't apply to the companion library
+    ast.attrs.retain(|attr| !is_problematic_inner_attr(attr));
+
     // Apply transformations
     let mut transformer = PublicityTransformer { add_serde };
     transformer.visit_file_mut(&mut ast);
@@ -40,7 +44,85 @@ fn transform_source(source: &str, remove_main: bool, add_serde: bool) -> Result<
     let code = prettyplease::unparse(&syn::parse2(tokens)?);
 
     // Prepend allow attributes to suppress warnings in generated code
-    Ok(format!("#![allow(unused_imports, dead_code)]\n\n{}", code))
+    Ok(format!(
+        "#![allow(unused_imports, dead_code, unexpected_cfgs)]\n\n{}",
+        code
+    ))
+}
+
+/// Check if an inner attribute should be filtered out for the companion library
+fn is_problematic_inner_attr(attr: &Attribute) -> bool {
+    let path = attr.path();
+
+    // Filter out no_std attribute
+    if path.is_ident("no_std") {
+        return true;
+    }
+
+    // Filter out cfg_attr that references features we don't support
+    // e.g., #![cfg_attr(not(feature = "std"), no_std)]
+    if path.is_ident("cfg_attr") {
+        let tokens = attr.to_token_stream().to_string();
+        // Filter any cfg_attr that mentions "std" feature or "no_std"
+        if tokens.contains("\"std\"") || tokens.contains("no_std") {
+            return true;
+        }
+    }
+
+    // Filter out feature attribute (used for nightly features)
+    if path.is_ident("feature") {
+        return true;
+    }
+
+    false
+}
+
+/// Check if any field in a struct contains a reference type
+/// Reference types cannot implement Deserialize, so we skip serde derive for these
+fn has_reference_fields(fields: &Fields) -> bool {
+    for field in fields {
+        if type_contains_reference(&field.ty) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Recursively check if a type contains a reference
+fn type_contains_reference(ty: &Type) -> bool {
+    match ty {
+        // Direct reference type
+        Type::Reference(_) => true,
+
+        // Check inside Option<T>, Vec<T>, etc.
+        Type::Path(type_path) => {
+            for segment in &type_path.path.segments {
+                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                    for arg in &args.args {
+                        if let syn::GenericArgument::Type(inner_ty) = arg {
+                            if type_contains_reference(inner_ty) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        }
+
+        // Check tuple types
+        Type::Tuple(tuple) => tuple.elems.iter().any(type_contains_reference),
+
+        // Check array/slice types
+        Type::Array(arr) => type_contains_reference(&arr.elem),
+        Type::Slice(slice) => type_contains_reference(&slice.elem),
+
+        // Check pointer types (also problematic for serde)
+        Type::Ptr(_) => true,
+
+        // Other types are assumed safe
+        _ => false,
+    }
 }
 
 fn is_main_fn(item: &Item) -> bool {
@@ -66,8 +148,9 @@ impl VisitMut for PublicityTransformer {
             field.vis = syn::parse_quote!(pub);
         }
 
-        // Add serde derives if requested
-        if self.add_serde {
+        // Add serde derives if requested, but skip if struct has reference fields
+        // Reference types like &'a T cannot implement Deserialize
+        if self.add_serde && !has_reference_fields(&node.fields) {
             add_serde_derive(&mut node.attrs);
         }
 
