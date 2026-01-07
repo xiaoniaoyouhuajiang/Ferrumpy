@@ -96,7 +96,7 @@ fn generate_cargo_toml(project_path: &Path, add_serde: bool) -> Result<String> {
     let mut cargo = String::new();
     cargo.push_str("[package]\n");
     cargo.push_str("name = \"ferrumpy_snapshot\"\n");
-    cargo.push_str("version = \"0.1.0\"\n");
+    cargo.push_str("version = \"0.1.3\"\n");
     cargo.push_str("edition = \"2021\"\n\n");
 
     cargo.push_str("[lib]\n");

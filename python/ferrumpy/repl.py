@@ -206,7 +206,7 @@ class ReplSession:
 
         cargo_content = """[package]
 name = "ferrumpy_snapshot_lib"
-version = "0.1.0"
+version = "0.1.3"
 edition = "2021"
 
 [lib]
@@ -247,7 +247,7 @@ pub use std::*;
 
         (lib_dir / "Cargo.toml").write_text("""[package]
 name = "ferrumpy_snapshot_lib"
-version = "0.1.0"
+version = "0.1.3"
 edition = "2021"
 
 [lib]
@@ -263,7 +263,7 @@ serde_json = "1"
         # This project depends on the generated lib
         cargo_content = f"""[package]
 name = "ferrumpy_repl"
-version = "0.1.0"
+version = "0.1.3"
 edition = "2021"
 
 [dependencies]
