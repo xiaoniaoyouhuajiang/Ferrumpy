@@ -93,6 +93,9 @@ fn generate_cargo_toml(project_path: &Path, add_serde: bool) -> Result<String> {
     // Parse and extract dependencies
     let user_toml: toml::Value = user_content.parse()?;
 
+    // Try to find workspace root and load workspace dependencies
+    let workspace_deps = find_workspace_dependencies(project_path);
+
     let mut cargo = String::new();
     cargo.push_str("[package]\n");
     cargo.push_str("name = \"ferrumpy_snapshot\"\n");
@@ -119,47 +122,117 @@ fn generate_cargo_toml(project_path: &Path, add_serde: bool) -> Result<String> {
                     continue;
                 }
 
-                match value {
-                    toml::Value::String(version) => {
-                        cargo.push_str(&format!("{} = \"{}\"\n", name, version));
-                    }
-                    toml::Value::Table(t) => {
-                        // Handle complex dependencies - serialize as inline table
-                        // We need to manually format as inline table since toml::to_string
-                        // outputs multi-line format that breaks when used inline
-                        let mut parts = Vec::new();
-                        for (key, val) in t {
-                            let val_str = match val {
-                                toml::Value::String(s) => format!("\"{}\"", s),
-                                toml::Value::Array(arr) => {
-                                    let items: Vec<String> = arr
-                                        .iter()
-                                        .map(|v| match v {
-                                            toml::Value::String(s) => format!("\"{}\"", s),
-                                            _ => v.to_string(),
-                                        })
-                                        .collect();
-                                    format!("[{}]", items.join(", "))
-                                }
-                                toml::Value::Boolean(b) => b.to_string(),
-                                toml::Value::Integer(i) => i.to_string(),
-                                toml::Value::Float(f) => f.to_string(),
-                                _ => {
-                                    // For nested tables, use toml serialization
-                                    toml::to_string(val).unwrap_or_default().trim().to_string()
-                                }
-                            };
-                            parts.push(format!("{} = {}", key, val_str));
-                        }
-                        cargo.push_str(&format!("{} = {{ {} }}\n", name, parts.join(", ")));
-                    }
-                    _ => {}
+                // Check if this is a workspace dependency
+                if let Some(resolved) = resolve_dependency(name, value, &workspace_deps) {
+                    cargo.push_str(&resolved);
+                    cargo.push('\n');
                 }
             }
         }
     }
 
     Ok(cargo)
+}
+
+/// Find workspace root and extract workspace.dependencies
+fn find_workspace_dependencies(project_path: &Path) -> Option<toml::value::Table> {
+    // Walk up from project_path to find workspace root (contains [workspace] section)
+    let mut current = project_path.to_path_buf();
+
+    for _ in 0..10 {
+        // limit search depth
+        let cargo_toml = current.join("Cargo.toml");
+        if cargo_toml.exists() {
+            if let Ok(content) = fs::read_to_string(&cargo_toml) {
+                if let Ok(parsed) = content.parse::<toml::Value>() {
+                    // Check if this is a workspace root
+                    if let Some(workspace) = parsed.get("workspace") {
+                        if let Some(deps) = workspace.get("dependencies") {
+                            if let Some(table) = deps.as_table() {
+                                return Some(table.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Move up to parent directory
+        if !current.pop() {
+            break;
+        }
+    }
+
+    None
+}
+
+/// Resolve a dependency, handling workspace = true case
+fn resolve_dependency(
+    name: &str,
+    value: &toml::Value,
+    workspace_deps: &Option<toml::value::Table>,
+) -> Option<String> {
+    match value {
+        toml::Value::String(version) => Some(format!("{} = \"{}\"", name, version)),
+        toml::Value::Table(t) => {
+            // Check if this is a workspace dependency
+            if t.get("workspace").and_then(|v| v.as_bool()) == Some(true) {
+                // Try to resolve from workspace dependencies
+                if let Some(ws_deps) = workspace_deps {
+                    if let Some(ws_dep) = ws_deps.get(name) {
+                        // Recursively resolve (in case workspace dep is also a table)
+                        return resolve_dependency(name, ws_dep, &None);
+                    }
+                }
+                // If we can't resolve, skip this dependency with a warning
+                eprintln!(
+                    "[FerrumPy] Warning: Skipping workspace dependency '{}' (could not resolve from workspace root)",
+                    name
+                );
+                return None;
+            }
+
+            // Handle complex dependencies - serialize as inline table
+            let mut parts = Vec::new();
+            for (key, val) in t {
+                // Skip 'workspace' key if present
+                if key == "workspace" {
+                    continue;
+                }
+                let val_str = format_toml_value(val);
+                parts.push(format!("{} = {}", key, val_str));
+            }
+
+            if parts.is_empty() {
+                None
+            } else {
+                Some(format!("{} = {{ {} }}", name, parts.join(", ")))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Format a TOML value for inline use
+fn format_toml_value(val: &toml::Value) -> String {
+    match val {
+        toml::Value::String(s) => format!("\"{}\"", s),
+        toml::Value::Array(arr) => {
+            let items: Vec<String> = arr.iter().map(format_toml_value).collect();
+            format!("[{}]", items.join(", "))
+        }
+        toml::Value::Boolean(b) => b.to_string(),
+        toml::Value::Integer(i) => i.to_string(),
+        toml::Value::Float(f) => f.to_string(),
+        toml::Value::Table(t) => {
+            let parts: Vec<String> = t
+                .iter()
+                .map(|(k, v)| format!("{} = {}", k, format_toml_value(v)))
+                .collect();
+            format!("{{ {} }}", parts.join(", "))
+        }
+        _ => toml::to_string(val).unwrap_or_default().trim().to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -171,5 +244,118 @@ mod tests {
         let config = LibGenConfig::default();
         assert!(config.add_serde_derives);
         assert!(config.output_dir.is_none());
+    }
+
+    #[test]
+    fn test_format_toml_value_string() {
+        let val = toml::Value::String("1.0".to_string());
+        assert_eq!(format_toml_value(&val), "\"1.0\"");
+    }
+
+    #[test]
+    fn test_format_toml_value_array() {
+        let val = toml::Value::Array(vec![
+            toml::Value::String("derive".to_string()),
+            toml::Value::String("serde".to_string()),
+        ]);
+        assert_eq!(format_toml_value(&val), "[\"derive\", \"serde\"]");
+    }
+
+    #[test]
+    fn test_format_toml_value_bool() {
+        let val = toml::Value::Boolean(true);
+        assert_eq!(format_toml_value(&val), "true");
+    }
+
+    #[test]
+    fn test_resolve_dependency_simple_version() {
+        let val = toml::Value::String("1.0".to_string());
+        let result = resolve_dependency("serde", &val, &None);
+        assert_eq!(result, Some("serde = \"1.0\"".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_dependency_with_features() {
+        let mut table = toml::value::Table::new();
+        table.insert(
+            "version".to_string(),
+            toml::Value::String("1.0".to_string()),
+        );
+        table.insert(
+            "features".to_string(),
+            toml::Value::Array(vec![toml::Value::String("derive".to_string())]),
+        );
+        let val = toml::Value::Table(table);
+        let result = resolve_dependency("serde", &val, &None).unwrap();
+        // Order may vary, so check both possibilities
+        assert!(
+            result.contains("version = \"1.0\"") && result.contains("features = [\"derive\"]"),
+            "Got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_resolve_dependency_workspace_true_with_resolution() {
+        // Simulate { workspace = true }
+        let mut dep_table = toml::value::Table::new();
+        dep_table.insert("workspace".to_string(), toml::Value::Boolean(true));
+        let dep_val = toml::Value::Table(dep_table);
+
+        // Simulate workspace.dependencies.bitflags = "2.4"
+        let mut ws_deps = toml::value::Table::new();
+        ws_deps.insert(
+            "bitflags".to_string(),
+            toml::Value::String("2.4".to_string()),
+        );
+
+        let result = resolve_dependency("bitflags", &dep_val, &Some(ws_deps));
+        assert_eq!(result, Some("bitflags = \"2.4\"".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_dependency_workspace_true_with_complex_resolution() {
+        // Simulate { workspace = true }
+        let mut dep_table = toml::value::Table::new();
+        dep_table.insert("workspace".to_string(), toml::Value::Boolean(true));
+        let dep_val = toml::Value::Table(dep_table);
+
+        // Simulate workspace.dependencies.tokio = { version = "1", features = ["full"] }
+        let mut tokio_table = toml::value::Table::new();
+        tokio_table.insert("version".to_string(), toml::Value::String("1".to_string()));
+        tokio_table.insert(
+            "features".to_string(),
+            toml::Value::Array(vec![toml::Value::String("full".to_string())]),
+        );
+        let mut ws_deps = toml::value::Table::new();
+        ws_deps.insert("tokio".to_string(), toml::Value::Table(tokio_table));
+
+        let result = resolve_dependency("tokio", &dep_val, &Some(ws_deps)).unwrap();
+        assert!(result.contains("version = \"1\""), "Got: {}", result);
+        assert!(result.contains("features = [\"full\"]"), "Got: {}", result);
+    }
+
+    #[test]
+    fn test_resolve_dependency_workspace_true_without_resolution() {
+        // Simulate { workspace = true } but no workspace deps available
+        let mut dep_table = toml::value::Table::new();
+        dep_table.insert("workspace".to_string(), toml::Value::Boolean(true));
+        let dep_val = toml::Value::Table(dep_table);
+
+        let result = resolve_dependency("unknown_dep", &dep_val, &None);
+        assert_eq!(result, None); // Should skip with warning
+    }
+
+    #[test]
+    fn test_resolve_dependency_workspace_true_dep_not_in_workspace() {
+        // Simulate { workspace = true } but dep not in workspace.dependencies
+        let mut dep_table = toml::value::Table::new();
+        dep_table.insert("workspace".to_string(), toml::Value::Boolean(true));
+        let dep_val = toml::Value::Table(dep_table);
+
+        let ws_deps = toml::value::Table::new(); // Empty
+
+        let result = resolve_dependency("missing_dep", &dep_val, &Some(ws_deps));
+        assert_eq!(result, None); // Should skip with warning
     }
 }
