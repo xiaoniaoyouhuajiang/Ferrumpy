@@ -123,7 +123,9 @@ fn generate_cargo_toml(project_path: &Path, add_serde: bool) -> Result<String> {
                 }
 
                 // Check if this is a workspace dependency
-                if let Some(resolved) = resolve_dependency(name, value, &workspace_deps) {
+                if let Some(resolved) =
+                    resolve_dependency(name, value, &workspace_deps, project_path)
+                {
                     cargo.push_str(&resolved);
                     cargo.push('\n');
                 }
@@ -166,11 +168,12 @@ fn find_workspace_dependencies(project_path: &Path) -> Option<toml::value::Table
     None
 }
 
-/// Resolve a dependency, handling workspace = true case
+/// Resolve a dependency, handling workspace = true and path = "..." cases
 fn resolve_dependency(
     name: &str,
     value: &toml::Value,
     workspace_deps: &Option<toml::value::Table>,
+    project_path: &Path,
 ) -> Option<String> {
     match value {
         toml::Value::String(version) => Some(format!("{} = \"{}\"", name, version)),
@@ -181,7 +184,7 @@ fn resolve_dependency(
                 if let Some(ws_deps) = workspace_deps {
                     if let Some(ws_dep) = ws_deps.get(name) {
                         // Recursively resolve (in case workspace dep is also a table)
-                        return resolve_dependency(name, ws_dep, &None);
+                        return resolve_dependency(name, ws_dep, &None, project_path);
                     }
                 }
                 // If we can't resolve, skip this dependency with a warning
@@ -190,6 +193,33 @@ fn resolve_dependency(
                     name
                 );
                 return None;
+            }
+
+            // Check if this is a path dependency - need to convert relative to absolute
+            if let Some(path_val) = t.get("path") {
+                if let Some(path_str) = path_val.as_str() {
+                    let dep_path = Path::new(path_str);
+                    let absolute_path = if dep_path.is_relative() {
+                        project_path.join(dep_path)
+                    } else {
+                        dep_path.to_path_buf()
+                    };
+
+                    // Convert to absolute path and rebuild the dependency
+                    let mut parts = Vec::new();
+                    parts.push(format!("path = \"{}\"", absolute_path.display()));
+
+                    // Copy other keys (version, features, etc.)
+                    for (key, val) in t {
+                        if key == "path" {
+                            continue; // Already handled
+                        }
+                        let val_str = format_toml_value(val);
+                        parts.push(format!("{} = {}", key, val_str));
+                    }
+
+                    return Some(format!("{} = {{ {} }}", name, parts.join(", ")));
+                }
             }
 
             // Handle complex dependencies - serialize as inline table
@@ -270,7 +300,8 @@ mod tests {
     #[test]
     fn test_resolve_dependency_simple_version() {
         let val = toml::Value::String("1.0".to_string());
-        let result = resolve_dependency("serde", &val, &None);
+        let dummy_path = Path::new("/tmp/test");
+        let result = resolve_dependency("serde", &val, &None, dummy_path);
         assert_eq!(result, Some("serde = \"1.0\"".to_string()));
     }
 
@@ -286,7 +317,8 @@ mod tests {
             toml::Value::Array(vec![toml::Value::String("derive".to_string())]),
         );
         let val = toml::Value::Table(table);
-        let result = resolve_dependency("serde", &val, &None).unwrap();
+        let dummy_path = Path::new("/tmp/test");
+        let result = resolve_dependency("serde", &val, &None, dummy_path).unwrap();
         // Order may vary, so check both possibilities
         assert!(
             result.contains("version = \"1.0\"") && result.contains("features = [\"derive\"]"),
@@ -309,7 +341,8 @@ mod tests {
             toml::Value::String("2.4".to_string()),
         );
 
-        let result = resolve_dependency("bitflags", &dep_val, &Some(ws_deps));
+        let dummy_path = Path::new("/tmp/test");
+        let result = resolve_dependency("bitflags", &dep_val, &Some(ws_deps), dummy_path);
         assert_eq!(result, Some("bitflags = \"2.4\"".to_string()));
     }
 
@@ -330,7 +363,8 @@ mod tests {
         let mut ws_deps = toml::value::Table::new();
         ws_deps.insert("tokio".to_string(), toml::Value::Table(tokio_table));
 
-        let result = resolve_dependency("tokio", &dep_val, &Some(ws_deps)).unwrap();
+        let dummy_path = Path::new("/tmp/test");
+        let result = resolve_dependency("tokio", &dep_val, &Some(ws_deps), dummy_path).unwrap();
         assert!(result.contains("version = \"1\""), "Got: {}", result);
         assert!(result.contains("features = [\"full\"]"), "Got: {}", result);
     }
@@ -342,7 +376,8 @@ mod tests {
         dep_table.insert("workspace".to_string(), toml::Value::Boolean(true));
         let dep_val = toml::Value::Table(dep_table);
 
-        let result = resolve_dependency("unknown_dep", &dep_val, &None);
+        let dummy_path = Path::new("/tmp/test");
+        let result = resolve_dependency("unknown_dep", &dep_val, &None, dummy_path);
         assert_eq!(result, None); // Should skip with warning
     }
 
@@ -355,7 +390,54 @@ mod tests {
 
         let ws_deps = toml::value::Table::new(); // Empty
 
-        let result = resolve_dependency("missing_dep", &dep_val, &Some(ws_deps));
+        let dummy_path = Path::new("/tmp/test");
+        let result = resolve_dependency("missing_dep", &dep_val, &Some(ws_deps), dummy_path);
         assert_eq!(result, None); // Should skip with warning
+    }
+
+    #[test]
+    fn test_resolve_dependency_path_relative() {
+        // Simulate { path = "crates/other_crate" }
+        let mut dep_table = toml::value::Table::new();
+        dep_table.insert(
+            "path".to_string(),
+            toml::Value::String("crates/other_crate".to_string()),
+        );
+        let dep_val = toml::Value::Table(dep_table);
+
+        let project_path = Path::new("/home/user/myproject");
+        let result = resolve_dependency("other_crate", &dep_val, &None, project_path).unwrap();
+
+        // Should convert relative path to absolute
+        assert!(
+            result.contains("path = \"/home/user/myproject/crates/other_crate\""),
+            "Got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_resolve_dependency_path_with_features() {
+        // Simulate { path = "crates/my_lib", features = ["async"] }
+        let mut dep_table = toml::value::Table::new();
+        dep_table.insert(
+            "path".to_string(),
+            toml::Value::String("crates/my_lib".to_string()),
+        );
+        dep_table.insert(
+            "features".to_string(),
+            toml::Value::Array(vec![toml::Value::String("async".to_string())]),
+        );
+        let dep_val = toml::Value::Table(dep_table);
+
+        let project_path = Path::new("/workspace/project");
+        let result = resolve_dependency("my_lib", &dep_val, &None, project_path).unwrap();
+
+        assert!(
+            result.contains("path = \"/workspace/project/crates/my_lib\""),
+            "Got: {}",
+            result
+        );
+        assert!(result.contains("features = [\"async\"]"), "Got: {}", result);
     }
 }
