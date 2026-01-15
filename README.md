@@ -12,27 +12,43 @@ A powerful debugging REPL for Rust, built on LLDB. Debug Rust with the ease of a
 
 ## Installation
 
-### Via pip (Recommended)
+### One-Line Installer (Recommended)
 
 ```bash
+curl -sSL https://raw.githubusercontent.com/xiaoniaoyouhuajiang/Ferrumpy/main/scripts/install.sh | bash
+```
+
+This automatically:
+- Downloads the correct wheel for your platform (macOS/Linux, arm64/x86_64)
+- Installs to `~/.local/lib/ferrumpy`
+- Configures `~/.lldbinit` to load FerrumPy
+- Sets up the REPL worker environment variable
+
+### Via pip/pipx
+
+```bash
+# Using pipx (isolated environment)
+pipx install ferrumpy
+
+# Or using pip
 pip install ferrumpy
 ```
 
-The package uses Python's Stable ABI (abi3) and is compatible with Python 3.9+.
+After pip install, manually add to `~/.lldbinit`:
+```bash
+echo 'command script import <path-to-ferrumpy-package>/ferrumpy' >> ~/.lldbinit
+```
 
-### Manual Setup
+### From Source (for development)
 
 ```bash
-# Clone the repository
 git clone https://github.com/xiaoniaoyouhuajiang/Ferrumpy.git
 cd Ferrumpy
-
-# Build and install
 maturin develop --release
-
-# Add to your ~/.lldbinit
-echo 'command script import <path-to-repo>/python/ferrumpy' >> ~/.lldbinit
+echo "command script import $(pwd)/python/ferrumpy" >> ~/.lldbinit
 ```
+
+**Requirements**: Python 3.9+, uses Stable ABI (abi3)
 
 ## Quick Start
 
@@ -119,6 +135,34 @@ For complex types that can't be automatically restored, use the `restore!` macro
 
 \* HashMap serialization is not supported in REPL snapshots. Create them manually in REPL if needed.
 
+## ⚠️ Important Limitations
+
+### Snapshot REPL Requirements
+
+The REPL snapshot feature captures variables via **serde serialization**. This means:
+
+1. **User-defined types**: Automatically work (FerrumPy adds `Serialize/Deserialize` derives)
+
+2. **Third-party types**: The crate **must enable `serde` feature**. For example:
+   ```toml
+   # ✅ Works - serde feature enabled
+   compact_str = { version = "0.9", features = ["serde"] }
+   
+   # ❌ Won't work - no serde support
+   compact_str = "0.9"
+   ```
+
+3. **Types without serde support**: If a third-party type doesn't offer a `serde` feature, the REPL cannot restore those variables
+
+### Workspace Projects
+
+FerrumPy fully supports Cargo workspaces with:
+- `{ workspace = true }` dependency resolution
+- Path dependencies between workspace members
+- Automatic type re-exports for path dependencies
+
+Just ensure all third-party dependencies have `serde` features enabled when needed.
+
 ## Project Structure
 
 ```
@@ -166,3 +210,4 @@ Built on top of:
 - [evcxr](https://github.com/google/evcxr) - Rust REPL engine
 - [PyO3](https://github.com/PyO3/pyo3) - Rust-Python bindings
 - LLDB Python API
+
