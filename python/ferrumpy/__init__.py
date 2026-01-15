@@ -7,7 +7,7 @@ This module provides LLDB extensions for better Rust debugging:
 - Enhanced locals/args display
 """
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 # lldb module is only available when running inside LLDB
 try:

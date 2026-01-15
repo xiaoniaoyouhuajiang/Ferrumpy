@@ -132,7 +132,7 @@ fn generate_cargo_toml(
     let mut cargo = String::new();
     cargo.push_str("[package]\n");
     cargo.push_str("name = \"ferrumpy_snapshot\"\n");
-    cargo.push_str("version = \"0.1.4\"\n");
+    cargo.push_str("version = \"0.1.5\"\n");
     cargo.push_str("edition = \"2021\"\n\n");
 
     cargo.push_str("[lib]\n");
@@ -562,24 +562,6 @@ fn copy_and_transform_src(src: &Path, dst: &Path, add_serde: bool) -> anyhow::Re
                 // Non-Rust files, just copy
                 fs::copy(&src_path, &dst_path)?;
             }
-        }
-    }
-    Ok(())
-}
-
-/// Recursively copy a directory
-fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-
-        if file_type.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else {
-            fs::copy(&src_path, &dst_path)?;
         }
     }
     Ok(())
