@@ -137,6 +137,8 @@ fi
 WORKER_PATH=""
 DATA_DIR="$INSTALL_DIR/ferrumpy-${VERSION}.data/scripts"
 if [ -d "$DATA_DIR" ] && [ -f "$DATA_DIR/ferrumpy-repl-worker" ]; then
+    ln -s -r "$INSTALL_DIR/ferrumpy-${VERSION}.data" "$INSTALL_DIR/ferrumpy-current.data"
+    DATA_DIR="$INSTALL_DIR/ferrumpy-current.data/scripts"
     WORKER_PATH="$DATA_DIR/ferrumpy-repl-worker"
 fi
 
@@ -144,6 +146,8 @@ fi
 if [ -z "$WORKER_PATH" ]; then
     DATA_DIR=$(find "$INSTALL_DIR" -maxdepth 1 -type d -name "*.data" | head -1)
     if [ -n "$DATA_DIR" ] && [ -f "$DATA_DIR/scripts/ferrumpy-repl-worker" ]; then
+        ln -s -r "$DATA_DIR" "$INSTALL_DIR/ferrumpy-current.data"
+        DATA_DIR="$INSTALL_DIR/ferrumpy-current.data"
         WORKER_PATH="$DATA_DIR/scripts/ferrumpy-repl-worker"
     fi
 fi
